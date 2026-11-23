@@ -2,27 +2,107 @@
 # jfy: menu do Journify que manda a task para o Claude Code (/pipeline) e registra o tempo.
 # Roda dentro de um tmux próprio (socket "jfy"): aba 0 = menu, uma aba por task rodando.
 # ponytail: /usr/bin/python3 (o do macOS) de propósito: o Python do python.org costuma vir sem certificados SSL.
-import json, os, re, select, shutil, subprocess, sys, time, unicodedata, urllib.request, uuid
-from datetime import datetime
+import itertools, json, math, os, random, re, select, shutil, subprocess, sys, textwrap, time, unicodedata, urllib.error, urllib.parse, urllib.request, uuid
+from datetime import date, datetime, timedelta
 
 HOME = os.path.expanduser("~/.jfy")
 CONFIG = os.path.join(HOME, "config.json")
 MEM_DIR = os.path.join(HOME, "memoria")
 RUN_DIR = os.path.join(HOME, "rodando")
 WT_DIR = os.path.join(HOME, "worktrees")
+DIA = os.path.join(HOME, "dia.json")  # cronômetro da jornada de hoje
+USO = os.path.join(HOME, "claude-status.json")  # gravado pelo statusline do Claude Code (install.sh)
+AGENDA = os.path.join(HOME, "agenda.json")  # cache das reuniões de hoje
+REUNIOES = os.path.join(HOME, "reunioes.json")  # projeto e contexto que você deu a cada reunião (r ou h): base das horas
+EMAIL = os.path.join(HOME, "email.json")  # estado da caixa: não lidos, último uid visto, email que acabou de chegar
+HORAS_DIR = os.path.join(HOME, "horas")  # AAAA-MM-DD.jsonl: cada trabalho medido (task, terminal livre, reunião)
+JOURNIFY = "https://journify.souv.tech"  # padrão; quem entra por outro domínio põe "journify" no config.json
+CATEGORIA = {"pipeline": "Desenvolvimento", "sessao": "Desenvolvimento", "livre": "Análise e estudo", "reuniao": "Reunião"}
+JORNADA = 8 * 60  # minutos; o cronômetro fica verde e avisa ao chegar aqui
 SELF = os.path.realpath(__file__)
-TMUX = ["tmux", "-L", "jfy", "-f", os.path.join(os.path.dirname(SELF), "tmux.conf")]
+TMUX = ["tmux", "-L", "jfy", "-f", os.path.join(HOME, "tmux.conf")]  # tmux.conf do repo já com as cores do tema
 STATUS_FIM = "finalizado_validacao"  # status ao concluir; troque aqui se o Journify ganhar um "em_teste"
-ORDEM = ["em_progresso", "a_fazer", "bloqueado", STATUS_FIM]
+# ordem na tela do projeto: o que dá para tocar agora primeiro, o que espera os outros depois
+ORDEM = ["em_progresso", "priorizado", "em_aberto", "criando_escopo", "em_revisao", "em_teste",
+         "pendente_validacao", "bloqueado", STATUS_FIM]
+JANELA = 7  # dias: prazo até aqui (ou vencido) entra no foco do menu principal
 BRANCH_OK = re.compile(r"^(feature|bugfix|hotfix|release)/[a-z0-9._-]+$")
 
-# ---------- cores ----------
+# ---------- cores e temas ----------
 PALETA = [39, 214, 170, 78, 141, 203, 51, 220, 117, 209]
 COR_STATUS = {"em_progresso": 220, "bloqueado": 203, STATUS_FIM: 78}
+# Tema = troca das cores do Padrão (cores 256 do terminal). O código pinta com as cores do Padrão e c(),
+# tematizar() e cor_projeto() trocam na saída. Papéis: 39 destaque, 78 ok, 220 em andamento, 214 alerta,
+# 203 perigo, 244 apagado, 250 texto, 255 texto forte, 236 fundo da barra; "projetos" = cores das abas.
+# "icones": cheio/vazio = barra do uso da IA (1 coluna cada, senão a barra desalinha); o resto vai na barra do tmux.
+# Valor = caractere, ou nome de um pixel art da fonte JFY Mono (fonte/icones.txt). O Padrão não depende da fonte.
+ICONES = {"cheio": "▰", "vazio": "▱", "reuniao": "📅", "email": "✉", "jornada": "⏱", "feito": "✓", "pausa": "⏸"}
+# "andador": 2 quadros (pixel art de 16 colunas) de quem empurra a barra da IA; alterna a cada segundo.
+PIXEL = {n: "".join(chr(int(c, 16)) for c in cps.split()) for n, cps in  # 16 colunas = 2 codepoints = 2 caracteres
+         re.findall(r"^== (\S+) ([0-9A-F ]+)$", open(os.path.join(os.path.dirname(SELF), "fonte", "icones.txt")).read(), re.M)}
+TEMAS = {
+    "Padrão": {},
+    "Dracula": {39: 141, 78: 84, 220: 228, 214: 215, 203: 203, 244: 61, 250: 253, 255: 231, 236: 236,
+                "projetos": [141, 212, 84, 117, 215, 228, 183, 159, 219, 210],
+                "icones": {"cheio": "coracao", "vazio": "coracao-vazio", "reuniao": "morcego", "email": "carta", "jornada": "lua", "feito": "taca", "pausa": "caixao"},
+                "andador": ["vampiro-1", "vampiro-2"]},
+    "Monokai": {39: 81, 78: 148, 220: 186, 214: 208, 203: 197, 244: 101, 250: 252, 255: 231, 236: 235,
+                "projetos": [81, 197, 148, 208, 141, 186, 123, 211, 191, 215],
+                "icones": {"cheio": "bloco", "vazio": "bloco-vazio", "reuniao": "lambda", "email": "arroba", "jornada": "cafe", "feito": "check", "pausa": "pausa"}},
+    "Cyberpunk": {39: 51, 78: 46, 220: 226, 214: 201, 203: 197, 244: 60, 250: 189, 255: 231, 236: 233,
+                  "projetos": [51, 201, 46, 226, 93, 197, 87, 213, 118, 129],
+                  "icones": {"cheio": "scan", "vazio": "scan-vazio", "reuniao": "raio", "email": "sinal", "jornada": "bateria", "feito": "disquete", "pausa": "pausa"},
+                  "andador": ["runner-1", "runner-2"]},
+    "Élfico": {39: 221, 78: 157, 220: 192, 214: 223, 203: 210, 244: 108, 250: 253, 255: 231, 236: 22,
+               "projetos": [221, 157, 152, 186, 151, 223, 159, 194, 229, 117],
+               "icones": {"cheio": "brilho", "vazio": "brilho-vazio", "reuniao": "folha", "email": "pergaminho", "jornada": "ramo", "feito": "estrela", "pausa": "lua"},
+               "andador": ["elfo-1", "elfo-2"]},
+    "Anão": {39: 221, 78: 150, 220: 215, 214: 208, 203: 196, 244: 144, 250: 223, 255: 230, 236: 58,
+             "projetos": [221, 208, 178, 136, 172, 215, 179, 130, 222, 166],
+             "icones": {"cheio": "gema", "vazio": "gema-vazia", "reuniao": "martelo", "email": "corvo", "jornada": "machado", "feito": "caneca", "pausa": "zz"},
+             "andador": ["anao-1", "anao-2"]},
+    "GTA": {39: 213, 78: 41, 220: 87, 214: 215, 203: 196, 244: 139, 250: 225, 255: 231, 236: 53,
+            "projetos": [213, 41, 87, 215, 199, 45, 219, 48, 207, 123],
+            "icones": {"cheio": "estrela", "vazio": "estrela-vazia", "reuniao": "alvo", "email": "celular", "jornada": "nota", "feito": "saco", "pausa": "palmeira"},
+            "andador": ["viatura-1", "viatura-2"]},
+    "Mordor": {39: 202, 78: 142, 220: 178, 214: 208, 203: 196, 244: 240, 250: 248, 255: 252, 236: 232,
+               "projetos": [202, 196, 208, 130, 160, 166, 124, 215, 88, 172],
+               "icones": {"cheio": "olho", "vazio": "olho-vazio", "reuniao": "vulcao", "email": "lobo", "jornada": "chama", "feito": "anel", "pausa": "caveira"},
+               "andador": ["lorde-1", "lorde-2"]},
+    "Aço": {39: 74, 78: 79, 220: 153, 214: 215, 203: 196, 244: 67, 250: 252, 255: 231, 236: 17,
+            "projetos": [74, 252, 153, 79, 110, 196, 117, 146, 189, 68],
+            "icones": {"cheio": "bloco", "vazio": "bloco-vazio", "reuniao": "raio", "email": "sinal", "jornada": "bateria", "feito": "check", "pausa": "pausa"},
+            "andador": ["robo-1", "robo-2"]},
+}
+TEMA = {}  # o escolhido; carregado do config logo depois de load()
+
+
+def ic(nome, tema=None):
+    """Ícone do tema (ou o do Padrão), já como caractere."""
+    v = (TEMA if tema is None else tema).get("icones", {}).get(nome, ICONES[nome])
+    return PIXEL.get(v, v)
+
+
+def andador(tema=None):
+    """Quem empurra a barra da IA (2 colunas), no quadro deste segundo; "" no tema sem andador."""
+    q = (TEMA if tema is None else tema).get("andador")
+    return PIXEL[q[int(time.time()) % len(q)]] if q else ""
+
+
+def tematizar(txt):
+    """Troca as cores do Padrão pelas do tema num texto com 'colourN' (config e barra do tmux)."""
+    return re.sub(r"colour(\d+)", lambda m: f"colour{TEMA.get(int(m[1]), m[1])}", txt)
+
+
+def tmux_conf():
+    """Grava ~/.jfy/tmux.conf: o tmux.conf do repo com as cores do tema. O tmux carrega esse arquivo."""
+    dst = os.path.join(HOME, "tmux.conf")
+    open(dst, "w").write(tematizar(open(os.path.join(os.path.dirname(SELF), "tmux.conf")).read()))
+    return dst
 
 
 def c(txt, cor, bold=False):
-    return f"\033[{'1;' if bold else ''}38;5;{cor}m{txt}\033[0m"
+    return f"\033[{'1;' if bold else ''}38;5;{TEMA.get(cor, cor)}m{txt}\033[0m"
 
 
 def dim(txt):
@@ -30,7 +110,8 @@ def dim(txt):
 
 
 def cor_projeto(pid):
-    return PALETA[sum(map(ord, pid)) % len(PALETA)]
+    pal = TEMA.get("projetos", PALETA)
+    return pal[sum(map(ord, pid)) % len(pal)]
 
 
 def status(s):
@@ -63,11 +144,20 @@ def mcp(tool, **args):
 
 
 # ---------- utilidades ----------
+def projetos_no_texto(cfg, texto):
+    """Projetos cujo apelido aparece no texto (título de reunião). O mais específico ganha: "rpa alpha" tira "alpha"."""
+    nomes = {p: x["nome"].lower() for p, x in cfg["projetos"].items() if x["nome"].lower() in texto.lower()}
+    return [p for p, n in nomes.items() if not any(n != m and n in m for m in nomes.values())]
+
+
 def load():
     try:
         return json.load(open(CONFIG))
     except (OSError, ValueError):
         return {"projetos": {}}
+
+
+TEMA = TEMAS.get(load().get("tema"), {})
 
 
 def save(cfg):
@@ -97,13 +187,69 @@ def ask_texto(msg):
             linhas.append("")
 
 
-def menu(titulo, itens, extras="", zero="voltar"):
+def escolha(prompt, teclas=""):
+    """Lê a opção de um menu: uma letra de `teclas` (e o 0) vale na hora, sem Enter; o resto (números, p3) vai até o
+    Enter, com backspace. Fora de um terminal, cai no input normal."""
+    import termios, tty
+    if not sys.stdin.isatty():
+        return ask(prompt)
+    print(prompt, end="", flush=True)
+    fd, buf = sys.stdin.fileno(), ""
+    antes = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        while True:
+            ch = sys.stdin.read(1)
+            if ch in ("\n", "\r", ""):
+                break
+            if ch in ("\x7f", "\b"):
+                if buf:
+                    buf = buf[:-1]
+                    print("\b \b", end="", flush=True)
+            elif not buf and ch in teclas + "0":
+                buf = ch
+                break
+            elif ch.isprintable():
+                buf += ch
+                print(ch, end="", flush=True)
+    except KeyboardInterrupt:
+        print()
+        sys.exit(0)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, antes)
+    print(buf if len(buf) == 1 and buf in teclas + "0" else "")
+    return buf.strip()
+
+
+def seta():
+    return c(" > ", 39, True)  # o mesmo prompt em toda tela (função: o tema pode mudar com o jfy aberto)
+
+
+def acoes_txt(pares, sair="0 volta"):
+    """Linha de ações igual em toda tela: a tecla em destaque e o que ela faz; o 0 apagado no fim."""
+    return "   ".join([c(k, 39, True) + " " + t for k, t in pares] + ([dim(sair)] if sair else []))
+
+
+def corta(txt, n):
+    txt = txt.strip()
+    return txt if len(txt) <= n else txt[:max(n, 2) - 1] + "…"
+
+
+def menu(titulo, itens, acoes=(), zero="volta", teclas=""):
     limpar()
     print(c(f" {titulo} ", 39, True) + "\n")
-    for i, txt in enumerate(itens, 1):
+    i = 0
+    for txt in itens:
+        if txt is None:  # separador, não conta na numeração
+            print()
+            continue
+        if isinstance(txt, tuple):  # (título[, nota]) = cabeçalho de seção, não conta na numeração
+            print(("\n" if i else "") + " " + c(txt[0], 244, True) + (dim("  " + txt[1]) if txt[1:] else ""))
+            continue
+        i += 1
         print(f" {c(f'{i:>2}', 39, True)}  {txt}")
-    print(f"\n {extras}{dim(' 0 ' + zero)}")
-    return ask(c("> ", 39, True))
+    print("\n " + acoes_txt(acoes, "0 " + zero))
+    return escolha(seta(), teclas)
 
 
 def doc_texto(node, depth=0):
@@ -115,7 +261,12 @@ def doc_texto(node, depth=0):
             return node
     t = node.get("type")
     if t == "text":
-        return node.get("text", "")
+        txt = node.get("text", "")
+        return f"**{txt}**" if any(m.get("type") == "bold" for m in node.get("marks", [])) else txt
+    if t == "image":
+        return f"![]({(node.get('attrs') or {}).get('src', '')})\n"
+    if t == "hardBreak":
+        return "\n"
     filhos = node.get("content", [])
     if t == "listItem":
         return "  " * depth + "- " + "".join(doc_texto(x, depth + 1) for x in filhos).strip() + "\n"
@@ -126,7 +277,56 @@ def doc_texto(node, depth=0):
         return "\n" + "#" * node["attrs"]["level"] + " " + inner + "\n"
     if t == "paragraph":
         return inner + "\n"
+    if t == "codeBlock":
+        return "```\n" + inner + "\n```\n"
     return inner
+
+
+def num_anexo(src, anexos):
+    """Número (a1, a2…) do anexo que é esta imagem. O id 'cu_<uuid>.png' da migração do ClickUp tem o uuid da URL."""
+    for i, x in enumerate(anexos, 1):
+        i_d = x.get("id", "")
+        if src == x.get("url") or (i_d.startswith("cu_") and i_d[3:].rsplit(".", 1)[0] in src):
+            return i
+
+
+def descricao(texto, anexos, largura):
+    """Markdown do ClickUp ou doc do Journify -> linhas limpas no terminal; imagem solta vira 'imagem aN'."""
+    linhas, codigo = [], False
+    for l in texto.replace("\\[", "[").replace("\\]", "]").splitlines():
+        s = l.strip()
+        if s.startswith("```"):
+            codigo = not codigo
+            continue
+        if codigo:  # bloco de código / wireframe: recuado e apagado, sem quebrar
+            linhas.append(dim("│ " + l.rstrip()[:largura - 2]) if s else "")
+            continue
+        if s in ("* * *", "*", "---", "***"):
+            linhas.append("")
+            continue
+        l = re.sub(r"!\[[^\]]*\]\(([^)]*)\)",
+                   lambda m: c("▣ imagem" + (f" a{n}" if (n := num_anexo(m[1], anexos)) else ""), 39), l)
+        if m := re.match(r"\s*#{1,6}\s+(.*)", l) or re.fullmatch(r"\s*\*\*([^*]+)\*\*:?\s*", l):
+            linhas += ["", c(m[1].replace("**", "").strip(), 255, True)]  # título, ou parágrafo todo em negrito
+            continue
+        if l.startswith("**") and linhas and linhas[-1]:  # parágrafo que abre com rótulo ("**Contexto.** ...")
+            linhas.append("")
+        l = re.sub(r"^(\s*)[*-]\s+", r"\1• ", re.sub(r"\*\*(.+?)\*\*", "\033[1m\\1\033[22m", l.rstrip()))
+        recuo = " " * (len(l) - len(l.lstrip()) + (2 if l.lstrip().startswith("• ") else 0))
+        linhas += textwrap.wrap(l, largura, subsequent_indent=recuo) or [""]
+    out = []
+    for l in linhas:  # uma linha em branco no máximo, nenhuma nas pontas
+        if l or (out and out[-1]):
+            out.append(l)
+    while out and not out[-1]:
+        out.pop()
+    return out
+
+
+def faixas(ns):
+    """[1, 2, 3, 4, 7] -> 'a1–a4, a7'"""
+    gs = [[n for _, n in g] for _, g in itertools.groupby(enumerate(ns), lambda p: p[1] - p[0])]
+    return ", ".join(f"a{g[0]}" + (f"–a{g[-1]}" if len(g) > 1 else "") for g in gs)
 
 
 def slug(s):
@@ -134,12 +334,829 @@ def slug(s):
     return re.sub(r"[^a-z0-9]+", "-", s).strip("-")[:40].rstrip("-")
 
 
+def ler_minutos(s):
+    """'80', '1h20', '1h', '1:20', '45min' -> minutos; None se não entendeu."""
+    m = re.fullmatch(r"(\d+)[h:](\d{1,2})?(?:min|m)?|(\d+)(?:min|m)?", s.strip().lower().replace(" ", ""))
+    return None if not m else int(m[1]) * 60 + int(m[2] or 0) if m[1] else int(m[3])
+
+
 def fmt_min(m):
     return f"{m // 60}h {m % 60:02d}min" if m >= 60 else f"{m}min"
 
 
+# ---------- prazos ----------
+def dias_prazo(t):
+    """Dias até o prazo (negativo = atrasada); None se a task não tem prazo."""
+    return (date.fromisoformat(t["dueDate"][:10]) - date.today()).days if t.get("dueDate") else None
+
+
+def urgencia(t):
+    """Chave do foco: dias até o prazo; crítica sem prazo próximo vem logo depois. None = fora do foco."""
+    n = dias_prazo(t)
+    if n is not None and n <= JANELA:
+        return n
+    return JANELA + 1 if t.get("priority") == "critica" else None
+
+
+def foco(tasks):
+    return sorted((t for t in tasks if urgencia(t) is not None), key=urgencia)
+
+
+def tag_prazo(t, largura=0):
+    n = dias_prazo(t)
+    if n is None:
+        return c("crítica".ljust(largura), 203) if t.get("priority") == "critica" else " " * largura
+    txt = (f"atrasada {-n}d" if n < 0 else "hoje" if n == 0 else "amanhã" if n == 1
+           else f"em {n}d" if n <= JANELA else date.fromisoformat(t["dueDate"][:10]).strftime("%d/%m"))
+    return c(txt.ljust(largura), 203 if n <= 0 else 214 if n <= 3 else 250, n <= 1)
+
+
+def linha_foco(cfg, t, largura=0):
+    pc = cfg["projetos"].get(t["projectId"])
+    proj = c(pc["nome"][:12].ljust(12), cor_projeto(t["projectId"])) if pc else dim(t["projectId"][:8].ljust(12))
+    return f"{tag_prazo(t, 12)}  {proj}  {corta(t['title'], largura - 34) if largura else t['title']}"
+
+
+def ler_data(s, hoje=None, futuro=True):
+    """'25/11', '25/11/2026', '+3' / '-1' (daqui a 3 dias / ontem) ou '2026-11-25' -> 'AAAA-MM-DD'; None se inválida.
+    futuro=False (horas): '20/11' é o deste ano mesmo que já tenha passado."""
+    hoje = hoje or date.today()
+    try:
+        if re.fullmatch(r"[+-]\d+", s):
+            return (hoje + timedelta(days=int(s))).isoformat()
+        if "-" in s:
+            return date.fromisoformat(s).isoformat()
+        d, m, *a = map(int, s.split("/"))
+        dt = date((a[0] + 2000 if a[0] < 100 else a[0]) if a else hoje.year, m, d)
+        if futuro and not a and dt < hoje:  # dia/mês que já passou este ano: é o do ano que vem
+            dt = dt.replace(year=dt.year + 1)
+        return dt.isoformat()
+    except ValueError:
+        return None
+
+
 def git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+
+
+# ---------- barra do tmux (reunião, uso da IA, jornada) e notificações do macOS ----------
+def notificar(titulo, texto, abrir=None, executar=None):
+    """Notificação do macOS. Com o terminal-notifier (o install.sh instala), o clique traz o terminal e abre o link
+    (`abrir`) ou roda o comando (`executar`, ex.: ir para a aba do Claude). Sem ele, a do osascript (clique não faz nada)."""
+    tn = shutil.which("terminal-notifier") or next((x for x in ("/opt/homebrew/bin/terminal-notifier",
+                                                                 "/usr/local/bin/terminal-notifier") if os.path.exists(x)), None)
+    if tn:
+        app = os.environ.get("__CFBundleIdentifier")  # o terminal de onde o jfy (ou o Claude) foi aberto
+        extra = (["-open", abrir] if abrir else []) + (["-execute", executar] if executar else []) \
+            + (["-activate", app] if app and not abrir else [])
+        if subprocess.run([tn, "-title", titulo, "-message", texto.lstrip("-[") or " ", "-sound", "Glass", *extra],
+                          capture_output=True).returncode == 0:
+            return
+        # sem permissão em Ajustes > Notificações (ou outro erro): cai na do osascript para o aviso não sumir
+    subprocess.run(["osascript", "-e", "on run a", "-e",
+                    'display notification (item 2 of a) with title (item 1 of a) sound name "Glass"',
+                    "-e", "end run", titulo, texto])
+
+
+def cmd_tmux(*args):
+    """Linha de shell que roda um comando no tmux do jfy (para o clique da notificação, que roda fora dele)."""
+    import shlex
+    return " ".join(shlex.quote(x) for x in [shutil.which("tmux") or "tmux", "-L", "jfy", *args])
+
+
+def cronometro(acao=None):
+    """Blocos de trabalho de hoje em ~/.jfy/dia.json. acao 'ligar': só se ainda não ligou hoje;
+    'alternar': pausa/retoma; 'zerar': volta a zero e começa de novo agora. Devolve (minutos hoje, rodando?)."""
+    # ponytail: bloco esquecido aberto morre na virada do dia; o dia seguinte começa do zero
+    try:
+        d = json.load(open(DIA))
+    except (OSError, ValueError):
+        d = {}
+    if d.get("data") != date.today().isoformat():
+        d = {"data": date.today().isoformat(), "blocos": []}
+    b, agora = d["blocos"], time.time()
+    rodando = bool(b) and b[-1][1] is None
+    if acao == "zerar":
+        b[:] = [[agora, None]]
+    elif acao == "alternar" and rodando:
+        b[-1][1] = agora
+    elif acao == "alternar" or (acao == "ligar" and not b):
+        b.append([agora, None])
+    if acao:
+        json.dump(d, open(DIA, "w"))
+    return int(sum((f or agora) - i for i, f in b) // 60), bool(b) and b[-1][1] is None
+
+
+def barra_ia():
+    """Uso dos limites do Claude (janela de 5h e semana), do JSON que o statusline do Claude Code grava em USO."""
+    # Claude recém-aberto grava sem rate_limits (só vêm após a 1ª resposta) e o tee trunca antes de escrever:
+    # nesses casos usa a última leitura boa, guardada em USO + ".ok"
+    for arq in (USO, USO + ".ok"):
+        try:
+            rl = json.load(open(arq))["rate_limits"]
+            j5, j7 = rl.get("five_hour") or {}, rl.get("seven_day") or {}
+            break
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            pass
+    else:
+        return ""
+    ok = USO + ".ok"
+    if arq == USO and os.path.getmtime(USO) > (os.path.getmtime(ok) if os.path.exists(ok) else 0):  # só se mudou
+        json.dump({"rate_limits": rl}, open(ok, "w"))
+    vivo = lambda j: time.time() < j.get("resets_at", 0)  # janela que já resetou desde a última gravação = 0%
+    p5 = round(j5.get("used_percentage", 0)) if vivo(j5) else 0
+    p7 = round(j7.get("used_percentage", 0)) if vivo(j7) else 0
+    cheio = min(10, round(p5 / 10))
+    ate = " até " + datetime.fromtimestamp(j5["resets_at"]).strftime("%H:%M") if vivo(j5) else ""
+    cor = 203 if p5 >= 80 else 214 if p5 >= 50 else 78
+    return f"#[fg=colour{cor}]IA {ic('cheio') * cheio}{andador()}{ic('vazio') * (10 - cheio)} {p5}%{ate} #[fg=colour244]· semana {p7}%  "
+
+
+ESCOPOS = ["https://www.googleapis.com/auth/calendar.events.readonly",  # só lê eventos
+           "https://www.googleapis.com/auth/gmail.readonly"]  # lê o email no popup do ✉; não marca, não apaga, não envia
+# gmail.metadata não entra junto: com ele no token o Gmail recusa format=full mesmo tendo o readonly
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+GMAIL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
+
+
+def chaves(servico, valor=None):
+    """Lê (ou grava, com valor) um segredo no Chaves do macOS. Grava pelo stdin do 'security -i', fora da linha
+    de comando (que aparece no ps)."""
+    if valor is None:
+        return subprocess.run(["security", "find-generic-password", "-a", "jfy", "-s", servico, "-w"],
+                              capture_output=True, text=True).stdout.strip()
+    esc = valor.replace("\\", "\\\\").replace('"', '\\"')
+    subprocess.run(["security", "-i"], input=f'add-generic-password -U -a jfy -s {servico} -w "{esc}"\n',
+                   text=True, check=True, capture_output=True)
+
+
+def http_json(url, dados=None, token=None):
+    """GET (ou POST de formulário) no Google; erro HTTP vira mensagem com o motivo (API desligada, escopo negado...)."""
+    req = urllib.request.Request(url, dados and urllib.parse.urlencode(dados).encode(),
+                                 {"Authorization": "Bearer " + token} if token else {})
+    try:
+        return json.load(urllib.request.urlopen(req, timeout=20))
+    except urllib.error.HTTPError as e:
+        raise RuntimeError(f"Google {e.code}: {e.read().decode(errors='replace')[:300]}") from None
+
+
+def google_token():
+    """Access token (vale 1h), reaproveitado do Chaves até 5min antes de vencer; depois renova com o refresh
+    token que o jfy --login guardou."""
+    try:
+        t = json.loads(chaves("jfy-google-acesso"))
+        if t["expira"] - time.time() > 300:
+            return t["token"]
+    except (ValueError, KeyError, TypeError):
+        pass
+    cli, rt = load().get("google"), chaves("jfy-google")
+    if not cli or not rt:
+        raise RuntimeError("Google não conectado: rode jfy --login")
+    r = http_json(TOKEN_URL, dict(cli, refresh_token=rt, grant_type="refresh_token"))
+    chaves("jfy-google-acesso", json.dumps({"token": r["access_token"], "expira": time.time() + r.get("expires_in", 3600)}))
+    return r["access_token"]
+
+
+def login():
+    """Login do Google (app Interno da empresa): abre o navegador, recebe o código em 127.0.0.1 (PKCE + state)
+    e guarda o refresh token no Chaves."""
+    import base64, hashlib, http.server, secrets
+    cfg = load()
+    if not cfg.get("google"):
+        arq = ask("Arraste aqui o JSON do client OAuth (baixado no Google Cloud) e dê Enter:\n> ")
+        j = json.load(open(os.path.expanduser(arq.strip("'\" ").replace("\\ ", " "))))["installed"]
+        cfg["google"] = {"client_id": j["client_id"], "client_secret": j["client_secret"]}
+    cli, recebido = cfg["google"], {}
+    verif, estado = secrets.token_urlsafe(64), secrets.token_urlsafe(16)
+    desafio = base64.urlsafe_b64encode(hashlib.sha256(verif.encode()).digest()).rstrip(b"=").decode()
+
+    class Volta(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            recebido.update(urllib.parse.parse_qsl(urllib.parse.urlparse(self.path).query))
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write("<h2>jfy: pode fechar esta aba e voltar para o terminal.</h2>".encode())
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), Volta)
+    volta = f"http://127.0.0.1:{srv.server_port}"
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode({
+        "client_id": cli["client_id"], "redirect_uri": volta, "response_type": "code", "scope": " ".join(ESCOPOS),
+        "code_challenge": desafio, "code_challenge_method": "S256", "state": estado,
+        "access_type": "offline", "prompt": "consent"})
+    subprocess.run(["open", url])
+    print(f"Abri o login do Google no navegador. Se não abriu, cole isto nele:\n{url}\n")
+    while "code" not in recebido and "error" not in recebido:  # ignora /favicon.ico e afins
+        srv.handle_request()
+    srv.server_close()
+    if recebido.get("state") != estado or "code" not in recebido:
+        return print(c(f"Login não concluído: {recebido.get('error', 'resposta inválida')}", 203))
+    tok = http_json(TOKEN_URL, dict(cli, code=recebido["code"], redirect_uri=volta,
+                                    grant_type="authorization_code", code_verifier=verif))
+    chaves("jfy-google", tok["refresh_token"])
+    chaves("jfy-google-acesso", json.dumps({"token": tok["access_token"], "expira": time.time() + tok.get("expires_in", 3600)}))
+    save(cfg)
+    try:
+        n, m = len(agenda_google()), len(gmail_nao_lidos(tok["access_token"]))
+        print(c(f"Google conectado: {n} reunião(ões) hoje, {m} email(s) não lido(s) na Principal.", 78))
+    except Exception as e:
+        print(c(f"Login salvo, mas a leitura falhou: {e}\nConfira se liberou agenda e Gmail na tela do Google "
+                "e se as duas APIs estão ativadas no projeto.", 214))
+
+
+def reunioes(itens):
+    """Eventos da API do Google Agenda -> [[início, fim, título, link da chamada, participantes + descrição]]
+    (epoch), sem: dia inteiro, cancelado, recusado por você, ausência e local de trabalho."""
+    ts = lambda x: datetime.fromisoformat(x["dateTime"].replace("Z", "+00:00")).timestamp()
+    out = []
+    for e in itens:
+        if "dateTime" not in e.get("start", {}) or e.get("status") == "cancelled" \
+                or e.get("eventType") in ("outOfOffice", "workingLocation") \
+                or any(a.get("self") and a.get("responseStatus") == "declined" for a in e.get("attendees", [])):
+            continue
+        # Meet; senão a chamada do conferenceData (Zoom, Teams); senão o local, se for um link
+        video = [p["uri"] for p in e.get("conferenceData", {}).get("entryPoints", []) if p.get("entryPointType") == "video"]
+        local = e.get("location", "")
+        link = e.get("hangoutLink") or (video[0] if video else local if local.startswith("http") else "")
+        quem = ", ".join(a.get("displayName") or a.get("email", "") for a in e.get("attendees", []) if not a.get("self"))
+        det = (f"Participantes: {quem}\n" if quem else "") + (e.get("description") or "")[:2000]
+        out.append([ts(e["start"]), ts(e["end"]), e.get("summary") or "(sem título)", link, det])
+    return sorted(out)
+
+
+def agenda_google(dia=None):
+    """Reuniões do dia na agenda principal; o Google já expande as recorrentes (singleEvents)."""
+    ini = datetime.combine(dia or date.today(), datetime.min.time()).astimezone()  # meia-noite local, com fuso
+    q = {"timeMin": ini.isoformat(), "timeMax": (ini + timedelta(days=1)).isoformat(),
+         "singleEvents": "true", "orderBy": "startTime", "maxResults": 250}
+    return reunioes(http_json("https://www.googleapis.com/calendar/v3/calendars/primary/events?"
+                              + urllib.parse.urlencode(q), token=google_token()).get("items", []))
+
+
+def gmail_nao_lidos(token):
+    """Ids dos não lidos da aba Principal da caixa de entrada, do mais novo para o mais antigo (até 100)."""
+    q = urllib.parse.urlencode([("labelIds", x) for x in ("INBOX", "UNREAD", "CATEGORY_PERSONAL")] + [("maxResults", 100)])
+    return [m["id"] for m in http_json(f"{GMAIL}?{q}", token=token).get("messages", [])]
+
+
+def gmail_meta(token, mid):
+    """(recebido em segundos, remetente, assunto) só pelos metadados (não marca como lido)."""
+    import email.utils
+    m = http_json(f"{GMAIL}/{mid}?format=metadata&metadataHeaders=From&metadataHeaders=Subject", token=token)
+    h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
+    nome, end = email.utils.parseaddr(h.get("from", ""))
+    return int(m.get("internalDate", 0)) // 1000, nome or end, h.get("subject") or "(sem assunto)"
+
+
+def gmail_cabecalho(token, mid):
+    """'Remetente: assunto' de um email (aviso de email novo na barra)."""
+    _, nome, assunto = gmail_meta(token, mid)
+    return f"{nome}: {assunto}"
+
+
+def email_barra():
+    """✉ na barra: não lidos da Principal e, por 5min, o email que acabou de chegar. Olha o Gmail a cada ~25s
+    (a barra roda a cada 1s), inclusive quando dá erro (não fica martelando o Google)."""
+    if not load().get("google"):
+        return ""
+    try:
+        st = json.load(open(EMAIL))
+    except (OSError, ValueError):
+        st = {}
+    if time.time() - st.get("checado", 0) > 25:
+        st["checado"] = time.time()
+        try:
+            tok = google_token()
+            ids = gmail_nao_lidos(tok)
+            # novo = mais recente que o maior id já visto (o id do Gmail cresce com o tempo). Comparar com a
+            # lista anterior dava falso alarme: com 100+ não lidos, ler os recentes puxa antigos para a janela.
+            primeira, maior = "maior" not in st, st.get("maior") or "0"  # 1ª olhada só marca a base
+            novos = [] if primeira else [i for i in ids if int(i, 16) > int(maior, 16)]
+            st.update(erro=False, ids=ids, maior=max(ids + [maior], key=lambda x: int(x, 16)))
+            if novos:
+                st.update(novo=gmail_cabecalho(tok, novos[0]), novo_id=novos[0], chegou=time.time())
+                cliente = "$(" + cmd_tmux("list-clients", "-F", "#{client_tty}") + " | head -1)"
+                notificar("Email novo", st["novo"], executar=cmd_tmux("display-popup", "-E", "-w", "90%", "-h", "85%",
+                                                                      "-T", " jfy: emails ", SELF + " --email")
+                          .replace("display-popup", f'display-popup -c "{cliente}"', 1))
+        except Exception:
+            st["erro"] = True
+        json.dump(st, open(EMAIL, "w"))
+    # range=user|email: o clique nesse trecho abre o leitor (jfy --email, ver o tmux.conf); o visual não muda
+    if time.time() - st.get("chegou", 0) < 300:
+        return f"#[range=user|email fg=colour232,bg=colour214,bold] {ic('email')} {st['novo'][:45].replace('#', '##')} #[default norange]  "
+    if st.get("erro"):
+        return f"#[range=user|email fg=colour203]{ic('email')} erro (jfy --login)#[norange]  "
+    n = len(st.get("ids", []))
+    return f"#[range=user|email fg=colour39]{ic('email')} {n}{'+' if n >= 100 else ''}#[norange]  " if n \
+        else f"#[range=user|email fg=colour244]{ic('email')}#[norange]  "  # caixa zerada: só o ícone
+
+
+def corpo_email(payload):
+    """Texto de um email (payload do format=full): o text/plain; se não houver, o text/html sem as tags.
+    Devolve (texto, [anexos])."""
+    import base64, html
+    partes, achado, anexos = [payload], {}, []
+    while partes:
+        p = partes.pop(0)
+        partes += p.get("parts", [])
+        if p.get("filename"):
+            anexos.append(p["filename"])
+        elif p.get("mimeType") in ("text/plain", "text/html") and p.get("body", {}).get("data"):
+            achado.setdefault(p["mimeType"], base64.urlsafe_b64decode(p["body"]["data"] + "==").decode(errors="replace"))
+    if "text/plain" in achado:
+        return achado["text/plain"].strip(), anexos
+    h = re.sub(r"(?is)<(style|script|head)\b.*?</\1>", "", achado.get("text/html", ""))
+    h = re.sub(r"(?i)<br\s*/?>|</(p|div|tr|li|h\d)>", "\n", h)
+    txt = html.unescape(re.sub(r"<[^>]+>", "", h))
+    return re.sub(r"\n\s*\n+", "\n\n", re.sub(r"[ \t\xa0]+", " ", txt)).strip(), anexos
+
+
+def ler_email(tok, mid):
+    """Abre um email no less (q volta). Só lê: continua não lido no Gmail."""
+    m = http_json(f"{GMAIL}/{mid}?format=full", token=tok)
+    h = {x["name"].lower(): x["value"] for x in m["payload"]["headers"]}
+    texto, anexos = corpo_email(m["payload"])
+    topo = (f"{c('De:', 39, True)} {h.get('from', '')}\n{c('Para:', 39, True)} {h.get('to', '')}\n"
+            f"{c('Data:', 39, True)} {h.get('date', '')}\n{c(h.get('subject') or '(sem assunto)', 255, True)}\n"
+            + (dim("Anexos: " + ", ".join(anexos)) + "\n" if anexos else ""))
+    link = f"https://mail.google.com/mail/u/0/#inbox/{m['threadId']}"
+    subprocess.run(["less", "-R", "-Ps q volta "], input=f"{topo}\n{texto}\n\n{dim('No Gmail: ' + link)}\n", text=True)
+
+
+def ler_emails():
+    """Clique no ✉ da barra (popup do tmux): não lidos da Principal. Se acabou de chegar um, abre ele direto."""
+    from concurrent.futures import ThreadPoolExecutor
+    try:
+        tok = google_token()
+        st = json.load(open(EMAIL)) if os.path.exists(EMAIL) else {}
+        if time.time() - st.get("chegou", 0) < 300 and st.get("novo_id"):
+            ler_email(tok, st.pop("novo_id"))
+            json.dump(dict(st, chegou=0), open(EMAIL, "w"))  # leu o aviso: a barra volta ao contador
+        ids = gmail_nao_lidos(tok)[:30]
+        with ThreadPoolExecutor(8) as ex:
+            metas = list(ex.map(lambda i: gmail_meta(tok, i), ids))
+    except Exception as e:
+        return ask(c(f"Gmail: {e}\n" + ("Rode jfy --login de novo para liberar a leitura dos emails.\n" if "403" in str(e) else "")
+                     + "Enter fecha.", 203))
+    while True:
+        larg = shutil.get_terminal_size().columns or 100
+        quando = lambda ts: datetime.fromtimestamp(ts).strftime("%H:%M" if date.fromtimestamp(ts) == date.today() else "%d/%m")
+        itens = [f"{dim(quando(ts))}  {c(corta(nome, 22).ljust(22), 255, True)}  {corta(assunto, larg - 40)}"
+                 for ts, nome, assunto in metas]
+        op = menu(f"Emails não lidos ({len(ids)}) · Principal", itens or [(dim("caixa zerada"),)],
+                  [("número", "lê"), ("o + número", "abre no Gmail")], zero="fecha")
+        n = op.lstrip("o")
+        if not (n.isdigit() and 1 <= int(n) <= len(ids)):
+            return
+        try:
+            if op.startswith("o"):
+                m = http_json(f"{GMAIL}/{ids[int(n) - 1]}?format=minimal", token=tok)
+                subprocess.run(["open", f"https://mail.google.com/mail/u/0/#inbox/{m['threadId']}"])
+            else:
+                ler_email(tok, ids[int(n) - 1])
+        except Exception as e:
+            ask(c(f"Erro: {e}. Enter volta.", 203))
+
+
+def eventos_hoje(forcar=False):
+    """Reuniões de hoje, com cache: busca no máximo a cada 2min (reunião marcada agora aparece logo); sem rede, fica com o que tinha."""
+    hoje = date.today().isoformat()
+    if not load().get("google"):
+        return []
+    try:
+        cache = json.load(open(AGENDA))
+    except (OSError, ValueError):
+        cache = {}
+    if forcar or cache.get("data") != hoje or time.time() - cache.get("baixado", 0) > 120:
+        try:
+            cache = {"data": hoje, "baixado": time.time(), "eventos": agenda_google()}
+            json.dump(cache, open(AGENDA, "w"))
+        except Exception:  # rede fora ou login revogado não derruba a barra; o jfy --login mostra o erro
+            pass
+    return cache.get("eventos", []) if cache.get("data") == hoje else []
+
+
+def proxima_reuniao():
+    """Contagem regressiva: reunião que começa em até 1h, ou que está rolando. Notifica uma vez a 5 min."""
+    agora = time.time()
+    for i, f, t, *r in eventos_hoje():
+        if f > agora and i - agora <= 3600:
+            m = int((i - agora + 59) // 60)
+            marca = os.path.join(RUN_DIR, "reuniao-avisada")
+            if 0 < i - agora <= 300 and (not os.path.exists(marca) or open(marca).read() != f"{i}"):
+                open(marca, "w").write(f"{i}")
+                notificar(f"Reunião em {fmt_min(m)}", t + (" · clique para entrar na chamada" if r and r[0] else ""),
+                          abrir=r[0] if r and r[0] else None)
+            cor = 203 if m <= 5 else 214 if m <= 15 else 39
+            # range=user|reuniao: clicar entra na chamada (jfy --entrar, ver o tmux.conf)
+            return (f"#[range=user|reuniao fg=colour{cor},bold]{ic('reuniao')} {t[:24].replace('#', '##')} "
+                    f"{'agora' if i <= agora else 'em ' + fmt_min(m)}#[default norange]  ")
+    return ""
+
+
+def relogio():
+    """Texto da barra do tmux, uma linha por segundo (o andador do tema anda). Fica rodando: o tmux mostra a última
+    linha e não chama de novo enquanto ele vive, então não sobe um Python por segundo. Sai quando o jfy muda (o tmux
+    sobe o novo no próximo redesenho, até 15s) e quando o tmux fecha. Avisa uma vez por dia quando fecha a jornada."""
+    global TEMA
+    versao = os.path.getmtime(SELF)
+    while os.path.getmtime(SELF) == versao:
+        TEMA = TEMAS.get(load().get("tema"), {})  # tema trocado no menu vale aqui sem reiniciar
+        m, rodando = cronometro()
+        marca, hoje = os.path.join(RUN_DIR, "jornada-avisada"), date.today().isoformat()
+        if m >= JORNADA and (not os.path.exists(marca) or open(marca).read() != hoje):
+            open(marca, "w").write(hoje)
+            notificar("jfy", f"Jornada de {JORNADA // 60}h fechada: {fmt_min(m)} hoje.")
+        if not m and not rodando:
+            jornada = f"#[fg=colour244]{ic('jornada')} jornada não começou "
+        else:
+            cor, icone = (78, ic("feito")) if m >= JORNADA else (220, ic("jornada")) if rodando else (244, ic("pausa") + " pausado")
+            jornada = f"#[fg=colour{cor},bold]{icone} {fmt_min(m)} / {JORNADA // 60}h#[default] "
+        print(tematizar(proxima_reuniao() + email_barra() + barra_ia() + jornada), flush=True)
+        time.sleep(1)
+
+
+def resumo_dia():
+    """Reuniões de hoje e tasks no foco. Usado pelo jfy --hoje e pela notificação das 7h."""
+    cfg, urgentes, evs = load(), foco(mcp("minhas_tasks")), eventos_hoje(forcar=True)
+    linhas = [c(datetime.fromtimestamp(i).strftime("%H:%M"), 39, True) + f"  {t}" for i, _, t, *_ in evs]
+    return f"{len(evs)} reunião(ões) · {len(urgentes)} task(s) no foco", linhas + [linha_foco(cfg, t) for t in urgentes]
+
+
+def notificar_dia():
+    """O launchd chama às 7h nos dias úteis (instalado pelo install.sh)."""
+    try:
+        titulo, linhas = resumo_dia()
+    except Exception as e:
+        return notificar("jfy", f"Não consegui montar o resumo do dia: {e}")
+    limpo = [" ".join(re.sub(r"\033\[[0-9;]*m", "", l).split()) for l in linhas]
+    notificar("jfy: " + titulo, "\n".join(limpo[:4]) or "Sem reunião nem prazo hoje.")
+
+
+def entrar():
+    """Ctrl-b m: abre a chamada da reunião que está rolando ou da próxima de hoje."""
+    ev = next((e for e in eventos_hoje() if e[1] > time.time() and len(e) > 3 and e[3]), None)
+    if ev:
+        return subprocess.run(["open", ev[3]])
+    subprocess.run(TMUX + ["display-message", "jfy: nenhuma reunião com link pela frente hoje"])
+
+
+def atalhos():
+    """Ctrl-b c: todos os comandos do jfy num popup do tmux; qualquer tecla fecha."""
+    import termios, tty
+    secoes = [
+        ("Em qualquer aba: Ctrl-b e depois", [("0", "menu"), ("1 2 3...", "vai para a aba"), ("w", "todas as abas com prévia"),
+                                              ("m", "entra na chamada da reunião atual ou da próxima"),
+                                              ("p", "pausa / retoma a jornada"), ("r", "zera a jornada"),
+                                              ("clique no ✉", "lê os emails num popup"), ("clique no 📅", "entra na chamada"),
+                                              ("d", "sai deixando as tasks rodando (jfy volta)"), ("c", "esta lista")]),
+        ("Menu principal", [("número", "abre a task do foco ou o projeto"), ("l", "terminal livre"),
+                            ("r", "reuniões de hoje: projeto e contexto para as horas (p + número prepara com o Claude)"), ("h", "horas de hoje: número edita, - + troca o dia, l lança"),
+                            ("t", "tema"), ("0", "sair")]),
+        ("Projeto", [("número", "abre a task"), ("s", "sessão: várias tasks num chat só"), ("l", "terminal livre no repo"),
+                     ("c", "trocar o repositório")]),
+        ("Task", [("1", "implementar (/pipeline)"), ("2", "conversar com o Claude (estudo, análise, documento)"),
+                  ("d", "descrição inteira e comentários"), ("a + número", "abre o anexo no navegador"),
+                  ("p", "definir prazo"), ("w", "abre a task no Journify"),
+                  ("/exit", "no Claude: encerra e registra o tempo")]),
+        ("No terminal", [("jfy", "abre ou volta para o jfy"), ("jfy --hoje", "reuniões e foco de hoje"),
+                         ("jfy --horas -1", "horas de ontem (ou 20/11)"), ("jfy --login", "conecta agenda e Gmail")]),
+    ]
+    for titulo, itens in secoes:
+        print(c(titulo, 255, True))
+        print("\n".join(f"  {c(k.ljust(15), 39, True)}{txt}" for k, txt in itens) + "\n")
+    print(dim("qualquer tecla fecha"), end="", flush=True)
+    fd = sys.stdin.fileno()
+    antes = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, antes)
+
+
+def avisar():
+    """Hook Stop/Notification do Claude Code (install.sh liga): notificação do macOS quando o Claude responde ou
+    pede permissão. Não avisa se você já está olhando: terminal na frente e, dentro do tmux, a aba dele aberta."""
+    if os.environ.get("JFY_SEM_AVISO"):  # claude -p do fechar(): ninguém está esperando essa resposta
+        return
+    d = json.load(sys.stdin)
+    pane = os.environ.get("TMUX_PANE")  # "tmux" sem -L usa o servidor do $TMUX: serve para o jfy e para outro tmux
+    tm = lambda fmt: subprocess.run(["tmux", "display", "-p", "-t", pane, fmt], capture_output=True, text=True).stdout.strip()
+    sh = lambda *a: subprocess.run(a, capture_output=True, text=True).stdout.strip()
+    na_frente = os.environ.get("__CFBundleIdentifier", "?") in sh("lsappinfo", "info", "-only", "bundleid", sh("lsappinfo", "front"))
+    # ponytail: fora do tmux não dá para saber a aba do terminal; com o terminal na frente, conta como olhando
+    aba_aberta = not pane or tm("#{window_active}") == "1" and tm("#{session_attached}") not in ("0", "")
+    if na_frente and aba_aberta:
+        return
+    onde = tm("#W") if pane else os.path.basename(d.get("cwd", ""))
+    titulo = "Claude precisa de você" if d.get("hook_event_name") == "Notification" else "Claude respondeu"
+    import shlex
+    sock = os.environ.get("TMUX", "").split(",")[0]
+    ir = (" ".join(shlex.quote(x) for x in [shutil.which("tmux") or "tmux", "-S", sock, "select-window", "-t", pane])
+          if pane and sock else None)  # clique na notificação: terminal na frente, já na aba deste Claude
+    notificar(f"{titulo} · {onde}", " ".join((d.get("message") or d.get("last_assistant_message") or "").split())[:140] or "pronto",
+              executar=ir)
+
+
+# ---------- horas (minhas-horas do Journify) ----------
+def minutos_uteis(ini, fim):
+    """Minutos entre ini e fim (epoch) tirando as reuniões de hoje que caíram no meio."""
+    # ponytail: só a agenda de hoje e reuniões sobrepostas descontam duas vezes; raro o bastante
+    reun = sum(max(0, min(f, fim) - max(i, ini)) for i, f, *_ in eventos_hoje())
+    return max(1, round((fim - ini - reun) / 60))
+
+
+def registrar_horas(ini, fim, minutos, modo, tid=None, pid=None, titulo=None):
+    """Uma linha por trabalho em ~/.jfy/horas/AAAA-MM-DD.jsonl (dia do início): base do jfy --horas."""
+    linha = {k: v for k, v in dict(ini=ini, fim=fim, min=minutos, modo=modo, tid=tid, pid=pid, titulo=titulo).items()
+             if v is not None}
+    with open(os.path.join(HORAS_DIR, date.fromtimestamp(ini).isoformat() + ".jsonl"), "a") as f:
+        f.write(json.dumps(linha, ensure_ascii=False) + "\n")
+
+
+def inflar(linhas, dia, regra):
+    """{(projeto, categoria, descrição): minutos medidos} -> minutos a lançar. A regra (config "horas") cobre o que
+    o cronômetro não vê (entender a task, ler, conversar): 'fator' sobre o medido e 'minimo' do dia útil, com um
+    quebrado de 5 a 55 min (o mesmo em toda rodada do dia) para não cravar a hora. O extra vai para as linhas de
+    trabalho, proporcional ao medido; reunião tem hora marcada na agenda e fica como está. Múltiplos de 5 min."""
+    medido = sum(linhas.values())
+    if not medido:
+        return {}
+    alvo = medido * regra.get("fator", 1)
+    if dia.weekday() < 5 and alvo < regra.get("minimo", 0):
+        alvo = regra["minimo"] + random.Random(dia.isoformat()).randrange(5, 60, 5)
+    alvo = 5 * math.ceil(alvo / 5)
+    trabalho = {k: m for k, m in linhas.items() if k[1] != CATEGORIA["reuniao"]} or linhas
+    extra, peso = alvo - medido, sum(trabalho.values())
+    lanc = {k: max(5, 5 * int((m + extra * trabalho.get(k, 0) / peso) // 5)) for k, m in linhas.items()}
+    lanc[max(trabalho, key=trabalho.get)] += alvo - sum(lanc.values())  # sobra do arredondamento na maior
+    return lanc
+
+
+def horas_do_dia(dia):
+    """Linhas medidas do dia: o log do jfy (tasks, terminal livre, preparação de reunião) + reuniões da agenda.
+    Devolve (linhas, reunioes): reunioes = {linha: (início, título, palpite?)} para poder definir projeto e contexto."""
+    cfg, linhas, tasks = load(), {}, {}
+    try:
+        log = [json.loads(l) for l in open(os.path.join(HORAS_DIR, dia.isoformat() + ".jsonl"))]
+    except OSError:
+        log = []
+    for e in log:
+        tid = e.get("tid")
+        if tid and tid not in tasks:
+            try:
+                tasks[tid] = mcp("obter_task", taskId=tid)["task"]
+            except Exception:  # task apagada ou Journify fora: fica o id
+                tasks[tid] = {"title": tid}
+        t = tasks.get(tid, {})
+        k = (e.get("pid") or t.get("projectId"), CATEGORIA.get(e["modo"], "Desenvolvimento"), e.get("titulo") or t.get("title"))
+        linhas[k] = linhas.get(k, 0) + e["min"]
+    try:
+        evs = reunioes_do_dia(dia) if cfg.get("google") else []
+    except Exception as e:
+        print(c(f"Agenda fora ({e}): reuniões não entraram.", 214))
+        evs = []
+    reun = {}
+    for i, f, titulo, *_ in evs:
+        if i >= time.time():  # ainda não aconteceu
+            continue
+        info = reuniao_info(i, titulo)
+        if info:  # você disse o projeto (r ou h): vale isso
+            k = (info.get("pid") or info.get("projeto"), CATEGORIA["reuniao"], info.get("contexto") or titulo)
+        else:  # palpite pelo apelido no título
+            achado = projetos_no_texto(cfg, titulo)
+            k = (achado[0] if len(achado) == 1 else None, CATEGORIA["reuniao"], titulo)
+        linhas[k] = linhas.get(k, 0) + round((min(f, time.time()) - i) / 60)
+        reun[k] = (i, titulo, not info)  # ponytail: duas reuniões na mesma linha (mesmo título e projeto): o número define a última
+    return linhas, reun
+
+
+def chave_reuniao(ini, titulo):
+    return datetime.fromtimestamp(ini).strftime("%Y-%m-%d %H:%M ") + titulo
+
+
+def reuniao_info(ini, titulo):
+    """O que você registrou para a reunião: {"pid"} (projeto do jfy) ou {"projeto"} (nome livre), e "contexto"."""
+    try:
+        return json.load(open(REUNIOES)).get(chave_reuniao(ini, titulo))
+    except (OSError, ValueError):
+        return None
+
+
+def gravar_reuniao(ini, titulo, reg):
+    # ponytail: o arquivo cresce uns 100 bytes por reunião; limpar os antigos se um dia pesar
+    try:
+        dados = json.load(open(REUNIOES))
+    except (OSError, ValueError):
+        dados = {}
+    dados[chave_reuniao(ini, titulo)] = reg
+    json.dump(dados, open(REUNIOES, "w"), indent=1, ensure_ascii=False)
+
+
+def nome_projeto(cfg, info_ou_pid):
+    """Apelido do jfy, o nome livre que você digitou, ou '?'."""
+    p = info_ou_pid if isinstance(info_ou_pid, str) or info_ou_pid is None else info_ou_pid.get("pid") or info_ou_pid.get("projeto")
+    return cfg["projetos"].get(p, {}).get("nome", p) if p else "?"
+
+
+def escolher_projeto(cfg, titulo, palpite=None):
+    """Menu dos projetos do jfy. Enter aceita o palpite; texto livre = nome do projeto no Journify (ex.: Souv).
+    Devolve {"pid"} ou {"projeto"}, ou None se voltou."""
+    pids = sorted(cfg["projetos"], key=lambda p: cfg["projetos"][p]["nome"])
+    op = menu(titulo, [c(cfg["projetos"][p]["nome"], cor_projeto(p)) + (dim("  ← enter") if p == palpite else "") for p in pids],
+              [("número", "escolhe")] + ([("enter", nome_projeto(cfg, palpite))] if palpite else [])
+              + [("ou escreva", "o nome do projeto no Journify (ex.: Souv)")])
+    if op == "0" or (not op and not palpite):
+        return None
+    return ({"pid": pids[int(op) - 1]} if op.isdigit() and 1 <= int(op) <= len(pids)
+            else {"projeto": op} if op and not op.isdigit()
+            else {"pid": palpite} if palpite in cfg["projetos"] else {"projeto": palpite})
+
+
+def classificar_reuniao(cfg, ini, titulo):
+    """Projeto e contexto de uma reunião, só gravados (sem Claude). O apelido no título é só o palpite do Enter.
+    Devolve o registro, ou None se voltou."""
+    atual = reuniao_info(ini, titulo) or {}
+    achado = projetos_no_texto(cfg, titulo)
+    palpite = atual.get("pid") or atual.get("projeto") or (achado[0] if len(achado) == 1 else None)
+    hora = datetime.fromtimestamp(ini).strftime("%d/%m %H:%M")
+    reg = escolher_projeto(cfg, f"Projeto da reunião {hora} \"{titulo}\"", palpite)
+    if reg is None:
+        return None
+    ctx = ask(f"Contexto, vira a descrição nas horas [{atual.get('contexto') or titulo}]: ", atual.get("contexto", ""))
+    if ctx:
+        reg["contexto"] = ctx
+    gravar_reuniao(ini, titulo, reg)
+    return reg
+
+
+def rotulo_reuniao(cfg, info):
+    if not info:
+        return dim("sem projeto")
+    p = info.get("pid") or info.get("projeto")
+    return c(nome_projeto(cfg, info), cor_projeto(p)) + (dim(" · " + info["contexto"]) if info.get("contexto") else "")
+
+
+def reunioes_do_dia(dia):
+    return eventos_hoje() if dia == date.today() else agenda_google(dia)
+
+
+def hm(m):
+    return f"{m // 60}:{m % 60:02d}"
+
+
+def ajustes_arq(dia):
+    return os.path.join(HORAS_DIR, dia.isoformat() + ".ajustes.json")
+
+
+def gravar_ajuste(dia, kid, **campos):
+    """O que você mudou numa linha das horas (p, cat, desc, min, fora), só nesse dia. None/False tira o ajuste."""
+    try:
+        aj = json.load(open(ajustes_arq(dia)))
+    except (OSError, ValueError):
+        aj = {}
+    a = aj.setdefault(kid, {})
+    for k, v in campos.items():
+        if v is None or v is False:
+            a.pop(k, None)
+        else:
+            a[k] = v
+    if not a:
+        aj.pop(kid)
+    json.dump(aj, open(ajustes_arq(dia), "w"), indent=1, ensure_ascii=False)
+
+
+def itens_horas(cfg, dia):
+    """As linhas do dia como vão para o Journify: o medido, com os seus ajustes e a regra do config.
+    Devolve (itens, medido, total pela regra). Linha removida fica no fim, com fora=True."""
+    linhas, reun = horas_do_dia(dia)
+    try:
+        aj = json.load(open(ajustes_arq(dia)))
+    except (OSError, ValueError):
+        aj = {}
+    itens = []
+    for k, m in linhas.items():
+        r = reun.get(k)
+        kid = "reuniao|" + chave_reuniao(*r[:2]) if r else "|".join(str(x) for x in k)  # reunião: estável mesmo trocando o projeto
+        a = aj.get(kid, {})
+        itens.append(dict(kid=kid, p=a.get("p", k[0]), cat=a.get("cat", k[1]), desc=a.get("desc", k[2]), med=m,
+                          fixo=a.get("min"), fora=a.get("fora", False), reuniao=r, lanc=0))
+    vivos = {(i, it["cat"]): it["med"] for i, it in enumerate(itens) if not it["fora"]}
+    lanc = inflar(vivos, dia, cfg.get("horas", {}))
+    for (i, _), m in lanc.items():
+        # ponytail: hora fixada à mão substitui a da regra e não rebalanceia as outras linhas
+        itens[i]["lanc"] = m if itens[i]["fixo"] is None else itens[i]["fixo"]
+    itens.sort(key=lambda it: (it["fora"], -it["lanc"]))
+    return itens, sum(vivos.values()), sum(lanc.values())
+
+
+def editar_linha_horas(cfg, dia, it):
+    """Muda uma linha (só nesse dia). Reunião: projeto e descrição vão para o reunioes.json, o mesmo do r."""
+    if it["fora"]:  # removida: o número restaura
+        return gravar_ajuste(dia, it["kid"], fora=False)
+    limpar()
+    print(c(" Editar lançamento ", 39, True) + f"  {dia.strftime('%d/%m/%Y')}\n")
+    print(f" {c(nome_projeto(cfg, it['p']), cor_projeto(it['p']) if it['p'] else 214, True)} · {it['cat']} · "
+          f"{c(hm(it['lanc']), 78, True)} · {it['desc']}\n")
+    op = escolha(" " + acoes_txt([("p", "projeto"), ("c", "categoria"), ("h", "horas"), ("d", "descrição"),
+                                  ("x", "remover")]) + "\n" + seta(), "pchdx")
+    r = it["reuniao"]
+    atual_reuniao = lambda: reuniao_info(*r[:2]) or ({"pid": it["p"]} if it["p"] in cfg["projetos"]
+                                                     else {"projeto": it["p"]} if it["p"] else {})
+    if op == "p":
+        reg = escolher_projeto(cfg, f"Projeto de \"{it['desc']}\"", it["p"])
+        if reg and r:
+            ctx = (reuniao_info(*r[:2]) or {}).get("contexto")
+            gravar_reuniao(*r[:2], dict(reg, **({"contexto": ctx} if ctx else {})))
+        elif reg:
+            gravar_ajuste(dia, it["kid"], p=reg.get("pid") or reg.get("projeto"))
+    elif op == "c":
+        cats = list(dict.fromkeys(CATEGORIA.values()))
+        o = menu("Categoria", cats, [("número", "escolhe"), ("ou escreva", "outra")])
+        cat = cats[int(o) - 1] if o.isdigit() and 1 <= int(o) <= len(cats) else o if o and not o.isdigit() else None
+        if cat:
+            gravar_ajuste(dia, it["kid"], cat=cat)
+    elif op == "h":
+        m = ask("  Horas (80, 1h20, 1:20) [enter = volta para a regra]: ")
+        gravar_ajuste(dia, it["kid"], min=ler_minutos(m))
+    elif op == "d":
+        d = ask(f"  Descrição [{it['desc']}]: ")
+        if d and r:
+            gravar_reuniao(*r[:2], dict(atual_reuniao(), contexto=d))
+        elif d:
+            gravar_ajuste(dia, it["kid"], desc=d)
+    elif op == "x":
+        gravar_ajuste(dia, it["kid"], fora=True)
+
+
+def tela_horas(dia=None):
+    """jfy --horas [data] (ou h no menu): o que vai para o minhas-horas, uma linha por lançamento. Abre em hoje;
+    o número edita a linha, - e + trocam o dia, l chama o Claude para lançar pelo Chrome."""
+    cfg, dia = load(), dia or date.today()
+    nome, regra = lambda p: nome_projeto(cfg, p), cfg.get("horas", {})
+    while True:
+        itens, medido, pela_regra = itens_horas(cfg, dia)
+        vivos = [it for it in itens if not it["fora"]]
+        total, larg = sum(it["lanc"] for it in vivos), min(shutil.get_terminal_size().columns or 100, 110)
+        cab = f" Horas · {['seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom'][dia.weekday()]} {dia.strftime('%d/%m/%Y')} "
+        limpar()
+        print(c(cab, 39, True) + " " * max(2, larg - len(cab) - 16) + "lançar " + c(fmt_min(total), 78, True))
+        traco = dim(" " + "─" * (larg - 2))
+        print(traco)
+        if not itens:
+            print(dim("\n Nada medido nesse dia: nenhuma task ou terminal livre pelo jfy e nenhuma reunião na agenda.\n"))
+        else:
+            print(dim(f"     {'projeto':<12} {'categoria':<17} {'horas':>5}  descrição"))
+        for n, it in enumerate(itens, 1):
+            desc = it["desc"] + (" (projeto pelo título)" if it["reuniao"] and it["reuniao"][2] and it["p"] else "")
+            desc, cat = desc[:max(12, larg - 46)], it["cat"][:17].ljust(17)
+            if it["fora"]:
+                print(dim(f" {n:>2}  {nome(it['p'])[:12]:<12} {cat} {'—':>5}  {desc}  · removida, o número restaura"))
+                continue
+            print(f" {c(f'{n:>2}', 39, True)}  {c(nome(it['p'])[:12].ljust(12), cor_projeto(it['p']) if it['p'] else 214)} {cat} "
+                  f"{c(hm(it['lanc']).rjust(5), 78, True)}  {desc}" + (dim("  · horas à mão") if it["fixo"] is not None else ""))
+        print(traco)
+        if itens:
+            fator = f"×{regra.get('fator', 1)}".replace(".", ",")
+            minimo = (f" e mínimo {fmt_min(regra['minimo'])}" if dia.weekday() < 5 else " (fim de semana: sem mínimo)") \
+                if regra.get("minimo") else ""
+            print(dim(f" medido {fmt_min(medido)} · {fator}{minimo} → {fmt_min(pela_regra)}")
+                  + (dim(f" · com seus ajustes: {fmt_min(total)}") if total != pela_regra else ""))
+            sem = sum(1 for it in vivos if not it["p"])
+            if sem:
+                print(c(f" ⚠ {sem} linha(s) sem projeto: edite pelo número ou o Claude pergunta ao lançar", 214))
+        prox = dia < date.today()
+        op = escolha("\n " + acoes_txt(([("número", "edita")] if itens else []) + ([("l", "lança (Claude no Chrome)")] if vivos else [])
+                                      + [("-", "dia anterior")] + ([("+", "próximo dia")] if prox else [])
+                                      + [("ou a data", "20/11")], "0 fecha") + "\n" + seta(), "l-+")
+        d = ler_data(op, futuro=False) if "/" in op else None
+        if op == "0":
+            return
+        if op == "-":
+            dia -= timedelta(days=1)
+        elif op == "+" and prox:
+            dia += timedelta(days=1)
+        elif d and date.fromisoformat(d) <= date.today():
+            dia = date.fromisoformat(d)
+        elif op.isdigit() and 1 <= int(op) <= len(itens):
+            editar_linha_horas(cfg, dia, itens[int(op) - 1])
+        elif op == "l" and vivos:
+            break
+    linhas = "\n".join(f"- projeto: {nome(it['p'])} (id Journify {it['p'] if it['p'] in cfg['projetos'] else '?'}) | "
+                       f"categoria: {it['cat']} | horas: {hm(it['lanc'])} | descrição: {it['desc']}" for it in vivos)
+    pedido = f"""Lance estas horas de {dia.strftime('%d/%m/%Y')} em {cfg.get('journify', JOURNIFY)}/minhas-horas pelo Chrome (já estou logado). Um envio por linha:
+{linhas}
+
+- Projeto: o apelido acima é o do jfy (ou o nome do projeto no Journify, quando não tem id); escolha no select do modal o projeto do Journify que corresponde (o id ajuda). Se a linha tiver projeto "?" ou houver dúvida, me pergunte antes.
+- Categoria: a opção do select mais próxima da sugerida.
+- O modal usa Radix Select com <select> nativo escondido: setar o valor pelo setter nativo + eventos input/change funciona (projeto, categoria, tasks.0.regularHoursInput, input[type=date], textarea[name=description]). Ao trocar o projeto aparece um select "Etapa": ache os selects pelo conteúdo das opções, não pelo índice. Espere o modal abrir antes de preencher.
+- Confira na tela se o dia já tem horas lançadas e me avise antes de duplicar. No fim, confirme que o total do dia ficou {hm(total)}."""
+    subprocess.call(["claude", pedido], cwd=os.path.expanduser("~"))
 
 
 # ---------- configuração de projeto ----------
@@ -152,8 +1169,8 @@ def escolher_pasta(inicio):
         for i, d in enumerate(subs, 1):
             eh_git = os.path.isdir(os.path.join(cur, d, ".git"))
             print(f" {c(f'{i:>2}', 39, True)}  {c(d, 78) if eh_git else d}{dim('  git') if eh_git else ''}")
-        print("\n" + dim(" número entra  ·  s usa esta pasta  ·  .. sobe  ·  ou cole um caminho  ·  0 voltar"))
-        op = ask(c("> ", 39, True))
+        print("\n " + acoes_txt([("número", "entra"), ("s", "usa esta pasta"), ("..", "sobe"), ("ou cole", "um caminho")]))
+        op = ask(seta())
         if op == "0":
             return None
         if op == "s":
@@ -181,7 +1198,7 @@ def configurar(cfg, pid):
     if not repo:
         return False
     padrao = p.get("nome") or os.path.basename(repo)
-    nome = ask(f"Nome do projeto [{padrao}] (0 voltar): ", padrao)
+    nome = ask(f"Nome do projeto [{padrao}] (0 volta): ", padrao)
     if nome == "0":
         return False
     cfg["projetos"][pid] = {"nome": nome, "repo": repo}
@@ -261,13 +1278,26 @@ def fechamento(pid_proj, task="a task que acabou de terminar"):
     )
 
 
-def fechar(sid, cwd, pedido):
-    """Depois do /exit: handoff.md e memória, garantidos mesmo se o Claude não fez."""
-    print(dim("Atualizando handoff.md e a memória do projeto..."))
-    # ponytail: retoma a mesma conversa em modo headless, só com ferramentas de leitura/escrita de arquivo
+def fechar(sid, cwd, pedido, repo):
+    """Depois do /exit: handoff.md e memória, garantidos mesmo se o Claude não fez. Roda em segundo plano (jfy --fechar)
+    para a aba fechar na hora; no fim tira o worktree, se ele ficou limpo (a branch continua)."""
+    # ponytail: reabrir a task no mesmo repo antes disso acabar (~1 min) pode cruzar com a escrita do handoff.md
+    arq = os.path.join(RUN_DIR, sid + ".fechar")
+    open(arq, "w").write(pedido)
+    subprocess.Popen([SELF, "--fechar", sid, cwd, repo, arq], start_new_session=True, stdin=subprocess.DEVNULL,
+                     stdout=subprocess.DEVNULL, stderr=open(os.path.join(RUN_DIR, "fechar.log"), "a"))
+    print(dim("handoff.md e memória do projeto: atualizando em segundo plano."))
+
+
+def fechar_agora(sid, cwd, repo, arq):
+    pedido = open(arq).read()
+    os.remove(arq)
+    # retoma a mesma conversa em modo headless, só com ferramentas de leitura/escrita de arquivo
     subprocess.call(["claude", "-p", "--resume", sid, "--permission-mode", "acceptEdits", "--allowedTools",
                      "Read", "Write", "Edit", "Glob", "Grep", "Bash(git log:*)", "Bash(git status:*)", "Bash(git diff:*)",
-                     "Bash(ls:*)", "--", pedido], cwd=cwd)
+                     "Bash(ls:*)", "--", pedido], cwd=cwd, env=dict(os.environ, JFY_SEM_AVISO="1"),
+                    stdout=subprocess.DEVNULL)
+    limpar_worktree(repo, cwd)
 
 
 def preparar_repo(repo, nome_wt):
@@ -280,8 +1310,8 @@ def preparar_repo(repo, nome_wt):
 
 
 def abrir_claude(cwd, contexto, pedido, lock, sid=None, extra=()):
-    print(dim("Para encerrar: /exit no Claude."))
-    time.sleep(2)
+    """Roda o Claude até o /exit. Devolve a hora (epoch) em que ele abriu."""
+    cronometro("ligar")
     t0 = time.time()
     try:
         subprocess.call(["claude", "--append-system-prompt", contexto, *extra] + (["--session-id", sid] if sid else [])
@@ -289,12 +1319,12 @@ def abrir_claude(cwd, contexto, pedido, lock, sid=None, extra=()):
     finally:
         if lock:
             os.remove(lock)
-    return max(1, round((time.time() - t0) / 60))
+    return t0
 
 
 def limpar_worktree(repo, cwd):
-    if cwd != repo and not git(cwd, "status", "--porcelain").stdout.strip() and \
-            ask(f"Remover o worktree {cwd}? A branch continua. (s/n) ", "n") == "s":
+    """Worktree sem nada pendente sai sozinho; a branch continua."""
+    if cwd != repo and not git(cwd, "status", "--porcelain").stdout.strip():
         git(repo, "worktree", "remove", cwd)
 
 
@@ -305,15 +1335,19 @@ def inicio(tid):
     print(f"Relógio ligado, status em_progresso: {tid}")
 
 
-def fim(tid, minutos=None, pronta=False, nada=False):
-    """Comenta o tempo gasto e, se pronta, muda o status. Sem minutos, usa o relógio do inicio()."""
+def fim(tid, minutos=None, pronta=False, nada=False, modo="sessao"):
+    """Comenta o tempo gasto e, se pronta, muda o status. Sem minutos, usa o relógio do inicio() (sem as reuniões).
+    O tempo também vai para o log de horas do dia."""
     arq = os.path.join(RUN_DIR, tid + ".t")
     if nada:  # só desliga o relógio, nada vai para o Journify
         if os.path.exists(arq):
             os.remove(arq)
         return print(dim("Nada registrado no Journify."))
+    agora = time.time()
+    ini = float(open(arq).read()) if os.path.exists(arq) else agora - 60 * (minutos or 1)
     if minutos is None:
-        minutos = max(1, round((time.time() - float(open(arq).read())) / 60))
+        minutos = minutos_uteis(ini, agora)
+    registrar_horas(ini, agora, minutos, modo, tid=tid)  # antes do Journify: o tempo foi trabalhado mesmo se ele falhar
     quando = datetime.now().strftime("%d/%m/%Y %H:%M")
     mcp("comentar_task", taskId=tid, texto=f"Tempo gasto: {fmt_min(minutos)} (Claude Code, encerrada em {quando})")
     if pronta:
@@ -349,7 +1383,7 @@ def rodar(tid, modo="pipeline"):
                   + notas)
     contexto = contexto_projeto(proj, pid_proj) + " Não mude status nem registre tempo no Journify: o jfy faz isso ao sair."
     sid = str(uuid.uuid4())
-    minutos = abrir_claude(cwd, contexto, pedido, lock, sid)
+    minutos = minutos_uteis(abrir_claude(cwd, contexto, pedido, lock, sid), time.time())
 
     print("\n" + c(" Fim da sessão ", 39, True) + " " + task["title"])
     op = ask(f" 1) pronta: registrar tempo e mover para {status(STATUS_FIM)}\n"
@@ -358,10 +1392,9 @@ def rodar(tid, modo="pipeline"):
     if op == "3":
         fim(tid, nada=True)
     else:
-        m = ask(f"Tempo gasto em minutos [{minutos}]: ", str(minutos))
-        fim(tid, int(m) if m.isdigit() else minutos, op == "1")
-    fechar(sid, cwd, fechamento(pid_proj, f"\"{task['title']}\" ({tid})"))
-    limpar_worktree(repo, cwd)
+        m = ask(f"Tempo gasto, já sem as reuniões (80, 1h20) [{fmt_min(minutos)}]: ")
+        fim(tid, ler_minutos(m) or minutos, op == "1", modo=modo)
+    fechar(sid, cwd, fechamento(pid_proj, f"\"{task['title']}\" ({tid})"), repo)
     ask(dim("Enter fecha esta aba."))
 
 
@@ -390,15 +1423,15 @@ Regras desta sessão:
 
     for t in tasks:  # tasks que ficaram com o relógio ligado
         if os.path.exists(os.path.join(RUN_DIR, t["id"] + ".t")):
-            m = ask(f"\n'{t['title']}' ficou aberta. Minutos a registrar [enter = relógio, n = não registrar]: ")
+            m = ask(f"\n'{t['title']}' ficou aberta. Tempo a registrar (80, 1h20) [enter = relógio, n = não registrar]: ")
             if m == "n":
                 os.remove(os.path.join(RUN_DIR, t["id"] + ".t"))
                 continue
-            fim(t["id"], int(m) if m.isdigit() else None, ask("Está pronta? (s/n) [n]: ", "n") == "s")
+            fim(t["id"], ler_minutos(m), ask("Está pronta? (s/n) [n]: ", "n") == "s")
     fechar(sid, cwd, "A sessão acabou. Se nenhuma task foi trabalhada nesta conversa, não faça nada e responda "
                      "'nada a atualizar'. Senão, confira o encerramento de todas as tasks trabalhadas (inclusive as "
-                     "que ficaram pela metade, como em andamento). " + fechamento(pid_proj, "todas as tasks desta sessão"))
-    limpar_worktree(repo, cwd)
+                     "que ficaram pela metade, como em andamento). " + fechamento(pid_proj, "todas as tasks desta sessão"),
+           repo)
     ask(dim("Enter fecha esta aba."))
 
 
@@ -411,48 +1444,212 @@ def livre(pasta):
     print(c(f" {nome} ", cor_projeto(achado[0] if achado else pasta), True) + " " + c("terminal livre", 255, True) + "\n")
     contexto = contexto_projeto(achado[1], achado[0]) if achado else "Terminal livre aberto pelo jfy."
     # ponytail: sem lock nem worktree, é uso solto; cuidado ao rodar junto com uma task no mesmo repo
-    abrir_claude(pasta, contexto, None, None, extra=["--dangerously-skip-permissions"])
+    t0 = abrir_claude(pasta, contexto, None, None, extra=["--dangerously-skip-permissions"])
+    registrar_horas(t0, time.time(), minutos_uteis(t0, time.time()), "livre", pid=achado[0] if achado else None,
+                    titulo="Terminal livre" + ("" if achado else f" em {os.path.basename(pasta)}"))
+
+
+def preparar(ini):
+    """Aba de preparação (p + número no r), opcional: o Claude prepara a pauta com o projeto e o contexto que você deu.
+    Reunião não vira task: o tempo vai para as horas (categoria Reunião) do projeto."""
+    cfg = load()
+    ev = next((e for e in eventos_hoje() if abs(e[0] - float(ini)) < 1), None)
+    if not ev:
+        return ask(c("Reunião não está mais na agenda de hoje. Enter fecha.", 203))
+    i, f, titulo, link, det = (ev + ["", ""])[:5]
+    info = reuniao_info(i, titulo) or {}
+    pid = info.get("pid")
+    proj = cfg["projetos"].get(pid)
+    hora = lambda x: datetime.fromtimestamp(x).strftime("%H:%M")
+    print(c(f" {proj['nome'] if proj else 'reunião'} ", cor_projeto(pid or titulo), True) + " " + c(titulo, 255, True) + "\n")
+    if proj:
+        tarefas = "\n".join(f"- [{t['statusId']}] {t['title']} ({t['id']})" for t in mcp("minhas_tasks", projetoId=pid))
+        sobre = f"Projeto Journify '{proj['nome']}' ({pid}). Minhas tasks abertas nele:\n{tarefas or '(nenhuma)'}"
+    else:
+        sobre = f"Projeto: {info['projeto']} (fora do jfy, sem repo)." if info.get("projeto") else "Sem projeto Journify associado."
+    if info.get("contexto"):
+        sobre += f"\nContexto que eu dei para esta reunião: {info['contexto']}"
+    chamada = f" (chamada: {link})" if link else ""
+    pedido = f"""Reunião "{titulo}" hoje, {hora(i)}–{hora(f)}{chamada}.
+Dados da agenda:
+{det or '(sem descrição)'}
+
+{sobre}
+
+Me prepare em poucas linhas. O que eu avancei desde a última reunião deste projeto (git log dos últimos 7 dias, handoff.md e o resumo da última reunião, se mcp__journify__listar_reunioes / obter_reuniao tiverem), o que está em revisão ou teste esperando alguém, bloqueios e as perguntas que eu devo levar.
+Não crie task para a reunião nem para o que sair dela: o tempo de reunião vai para as horas do projeto, categoria Reunião."""
+    contexto = contexto_projeto(proj, pid) if proj else "Preparação de reunião aberta pelo jfy."
+    t0 = abrir_claude(proj["repo"] if proj else os.path.expanduser("~"), contexto, pedido, None)
+    registrar_horas(t0, time.time(), minutos_uteis(t0, time.time()), "reuniao", pid=pid or info.get("projeto"), titulo=f"Preparação: {info.get('contexto') or titulo}")
 
 
 def abrir_aba(nome, pid_proj, *args):
+    """Abre a aba. Se a mesma coisa (mesma task, reunião, pasta) já tem aba, só vai para ela: abrir duas vezes a mesma
+    task brigava pelo worktree e a segunda aba quebrava."""
+    chave = " ".join(args[:2])  # --run <id> vale para /pipeline e livre
+    abas = subprocess.run(TMUX + ["list-windows", "-F", "#{window_id}\t#{@jfy}"], capture_output=True, text=True).stdout
+    wid = next((w for w, k in (l.split("\t", 1) for l in abas.splitlines() if "\t" in l) if k == chave), None)
+    if wid:
+        return subprocess.run(TMUX + ["select-window", "-t", wid])
     wid = subprocess.run(TMUX + ["new-window", "-P", "-F", "#{window_id}", "-n", nome, SELF, *args],
                          capture_output=True, text=True).stdout.strip()
     subprocess.run(TMUX + ["set-window-option", "-t", wid, "window-status-style", f"fg=colour{cor_projeto(pid_proj)}"])
+    subprocess.run(TMUX + ["set-window-option", "-t", wid, "@jfy", chave])
 
 
 # ---------- menus ----------
+def tela_tema():
+    global TEMA
+    nomes, atual = list(TEMAS), load().get("tema", "Padrão")
+    amostra = lambda t: "".join(f"\033[38;5;{t.get(k, k)}m██" for k in (39, 78, 220, 214, 203, 244)) + "\033[0m"
+    icones = lambda t: " ".join(ic(k, t) for k in ("reuniao", "email", "jornada", "feito", "pausa")) \
+        + "  " + ic("cheio", t) * 3 + andador(t) + ic("vazio", t) * 2
+    op = menu("Tema", [f"{amostra(TEMAS[n])}  {n:<10} {icones(TEMAS[n])}" + (dim("  (atual)") if n == atual else "")
+                       for n in nomes])
+    if op.isdigit() and 1 <= int(op) <= len(nomes):
+        cfg = load()  # relê: não sobrescreve o que outro jfy (ex.: --login) gravou
+        cfg["tema"] = nomes[int(op) - 1]
+        save(cfg)
+        TEMA = TEMAS[cfg["tema"]]
+        subprocess.run(TMUX + ["source-file", tmux_conf()])  # barra muda na hora, abas abertas inclusive
+
+
+def tela_reunioes(cfg):
+    if not cfg.get("google"):
+        return ask(c("Agenda não conectada: rode jfy --login. Enter para voltar.", 214))
+    evs, agora = eventos_hoje(forcar=True), time.time()
+    quando = lambda i, f: dim("  já foi") if f < agora else c("  agora", 203, True) if i <= agora else dim(f"  em {fmt_min(int((i - agora) // 60))}")
+    while True:  # número: só grava projeto e contexto (base das horas); p + número: preparação com o Claude, opcional
+        op = menu("Reuniões de hoje: projeto e contexto para as horas",
+                  [f"{c(datetime.fromtimestamp(i).strftime('%H:%M'), 39, True)}  {t}{quando(i, f)}  "
+                   + rotulo_reuniao(cfg, reuniao_info(i, t)) for i, f, t, *_ in evs] or [(dim("nenhuma reunião hoje"),)],
+                  [("número", "projeto e contexto"), ("p + número", "prepara com o Claude")])
+        n = op[1:] if op.startswith("p") else op
+        if not (evs and n.isdigit() and 1 <= int(n) <= len(evs)):
+            return
+        i, _, t, *_ = evs[int(n) - 1]
+        if not op.startswith("p"):
+            classificar_reuniao(cfg, i, t)
+        elif reuniao_info(i, t) or classificar_reuniao(cfg, i, t):  # a preparação usa o projeto que você deu
+            return abrir_aba("reunião: " + t[:20], t, "--reuniao", repr(i))
+
+
+def blocos_task(cfg, t, full, largura):
+    """Topo (projeto, título, indicadores) e rodapé (anexos, comentários) da task, em linhas."""
+    pid, tk = t["projectId"], full["task"]
+    topo = [c(f" {cfg['projetos'][pid]['nome']} ", cor_projeto(pid), True) + dim("─" * (largura - len(cfg['projetos'][pid]['nome']) - 2))]
+    topo += [c(l, 255, True) for l in textwrap.wrap(t["title"], largura)]
+    pts, n, pr = (tk.get("estimate") or {}).get("value"), dias_prazo(t), t.get("priority") or ""
+    ind = [c("● " + t["statusId"].replace("_", " "), COR_STATUS.get(t["statusId"], 250)),
+           c("▲ crítica", 203) if pr == "critica" else c("▲ alta", 214) if pr == "alta" else dim(pr.replace("media", "média"))]
+    if pts:
+        ind.append(c(f"{pts:g} pts".replace(".", ","), 250))
+    ind.append(dim("sem prazo") if n is None else c("prazo " + date.fromisoformat(t["dueDate"][:10]).strftime("%d/%m"), 250)
+               + (" · " + tag_prazo(t) if n <= JANELA else ""))
+    topo += ["", "   ".join(ind)]
+    if pts and pts > 8:
+        topo.append(c("acima de 8 pontos: o fluxo pede dividir a task antes", 203))
+    anexos, coms, base = tk.get("attachments") or [], full.get("comments") or [], []
+    imgs = [i for i, x in enumerate(anexos, 1) if (x.get("contentType") or "").startswith("image/")]
+    docs = [f"{c(f'a{i}', 39, True)} {x.get('name', '?')}"[:largura + 20] for i, x in enumerate(anexos, 1) if i not in imgs]
+    if imgs:
+        docs.insert(0, f"{len(imgs)} {'imagem' if len(imgs) == 1 else 'imagens'}  " + c(faixas(imgs), 39, True))
+    for k, l in enumerate(docs):
+        base.append(c("ANEXOS".ljust(13) if k == 0 else " " * 13, 244, True) + l)
+    if coms:
+        u = coms[-1]
+        txt = f"{u.get('authorName')}: " + " ".join((u.get("body") or "").split())
+        base.append(c("COMENTÁRIOS".ljust(13), 244, True) + txt[:largura - 13]
+                    + (dim(f"  +{len(coms) - 1} no d") if len(coms) > 1 else ""))
+    return topo, base
+
+
 def tela_task(cfg, t):
-    full = mcp("obter_task", taskId=t["id"])
-    limpar()
-    print(c(f" {cfg['projetos'][t['projectId']]['nome']} ", cor_projeto(t["projectId"]), True))
-    pts = (full["task"].get("estimate") or {}).get("value")
-    print(c(t["title"], 255, True) + "  " + status(t["statusId"]) + dim(f"  prioridade {t['priority']}")
-          + (dim(f"  {pts} pts") if pts else "")
-          + (c("  acima de 8 pontos: o fluxo pede dividir a task antes", 203) if pts and pts > 8 else "") + "\n")
-    print(doc_texto(full["task"].get("description") or "").strip() or dim("(sem descrição)"))
-    for cm in full.get("comments", []):
-        print(dim(f"  > {cm.get('authorName')}: ") + cm.get("body", ""))
-    op = ask("\n" + c(" 1", 39, True) + "  /pipeline   (task de código: testes, implementação, revisão)\n"
-             + c(" 2", 39, True) + "  Claude livre (estudo, análise, documento, reunião)\n" + dim(" 0 voltar") + "\n" + c("> ", 39, True))
-    if op in ("1", "2"):
-        extra = ask_texto("\n" + c("Algo a mais para o Claude?", 39, True) + dim(
-            " Digite ou cole texto, arraste arquivos (prints, PDFs, planilhas) para cá. Linha vazia continua."))
-        if extra:
-            open(os.path.join(RUN_DIR, t["id"] + ".extra"), "w").write(extra)
-        nome = f"{cfg['projetos'][t['projectId']]['nome'][:12]}: {t['title'][:24]}"
-        abrir_aba(nome, t["projectId"], "--run", t["id"], "pipeline" if op == "1" else "livre")
+    full = mcp("obter_task", taskId=t["id"])  # uma busca só; p, w e anexo redesenham sem buscar de novo
+    anexos = full["task"].get("attachments") or []
+    while True:
+        tam = shutil.get_terminal_size()
+        largura = min(tam.columns or 100, 100) - 2
+        topo, base = blocos_task(cfg, t, full, largura)
+        desc = descricao(doc_texto(full["task"].get("description") or ""), anexos, largura)
+        acoes = [dim("─" * largura), acoes_txt([("1", "implementar (/pipeline)"), ("2", "conversar com o Claude")], ""),
+                 acoes_txt([("d", "descrição inteira")]
+                           + ([("a1" + (f"–a{len(anexos)}" if len(anexos) > 1 else ""), "abre anexo")] if anexos else [])
+                           + [("p", "prazo"), ("w", "Journify")])]
+        # a descrição ocupa o que sobra da tela; o resto fica no d
+        cabe = max(5, (tam.lines or 40) - len(topo) - len(base) - len(acoes) - 7)
+        limpar()
+        print("\n".join(" " + l for l in topo) + "\n")
+        print(" " + c("O QUE FAZER", 244, True))
+        print("\n".join(" " + l for l in desc[:cabe]) if desc else " " + dim("(sem descrição)"))
+        if len(desc) > cabe:
+            print(" " + dim(f"… mais {len(desc) - cabe} linhas · d lê a descrição inteira"))
+        print("\n" + "\n".join(" " + l for l in (base + [""] if base else []) + acoes))
+        op = escolha(seta(), "12dpw")
+        if op == "d":
+            coms = [c(f"{x.get('authorName')}:", 39, True) + " " + (x.get("body") or "") for x in full.get("comments") or []]
+            subprocess.run(["less", "-R", "-Ps q volta "], text=True, input="\n".join(
+                topo + ["", c("O QUE FAZER", 244, True)] + (desc or [dim("(sem descrição)")]) + [""] + base
+                + ([""] + coms if len(coms) > 1 else [])) + "\n")
+        elif op == "w":
+            subprocess.run(["open", f"{cfg.get('journify', JOURNIFY)}/projects/{t['projectId']}?task={t['id']}"])
+        elif op[:1] == "a" and op[1:].isdigit() and 1 <= int(op[1:]) <= len(anexos):
+            subprocess.run(["open", anexos[int(op[1:]) - 1]["url"]])  # só o link: nada é baixado para o disco
+        elif op == "p":
+            d = ler_data(ask("Prazo (25/11, 25/11/2026 ou +3 = daqui a 3 dias): "))
+            if d:
+                mcp("atualizar_task", taskId=t["id"], dueDate=d)
+                t["dueDate"] = d
+            else:
+                ask(c("Data inválida. Enter para continuar.", 203))
+        elif op in ("1", "2"):
+            extra = ask_texto("\n" + c("Algo a mais para o Claude?", 39, True) + dim(
+                " Digite ou cole texto, arraste arquivos (prints, PDFs, planilhas) para cá. Linha vazia continua."))
+            if extra:
+                open(os.path.join(RUN_DIR, t["id"] + ".extra"), "w").write(extra)
+            nome = f"{cfg['projetos'][t['projectId']]['nome'][:12]}: {t['title'][:24]}"
+            return abrir_aba(nome, t["projectId"], "--run", t["id"], "pipeline" if op == "1" else "livre")
+        elif op == "0":
+            return
+
+
+# seções da lista de tasks, na ordem do que pede ação sua primeiro; o status sai da linha porque a seção já diz
+ETAPAS = ["URGENTE", "EM ANDAMENTO", "A FAZER", "ESPERANDO ALGUÉM", "BLOQUEADAS"]
+ESPERA = {"em_revisao": "revisão", "em_teste": "teste", "pendente_validacao": "validação"}
+
+
+def etapa(t):
+    s = t["statusId"]
+    return (0 if urgencia(t) is not None else 1 if s == "em_progresso" else 3 if s in ESPERA
+            else 4 if s == "bloqueado" else 2)
 
 
 def tela_projeto(cfg, pid):
+    buscado = 0
     while True:
-        tasks = sorted(mcp("minhas_tasks", projetoId=pid),
-                       key=lambda x: ORDEM.index(x["statusId"]) if x["statusId"] in ORDEM else 1)
+        if time.time() - buscado > 60:  # voltar de uma task não espera o Journify de novo; Enter força
+            tasks = sorted(mcp("minhas_tasks", projetoId=pid),
+                           key=lambda x: (etapa(x), urgencia(x) or 0,
+                                          ORDEM.index(x["statusId"]) if x["statusId"] in ORDEM else len(ORDEM)))
+            buscado = time.time()
+        w = 12 if any(etapa(x) in (0, 3) or x.get("dueDate") for x in tasks) else 0
+        itens, atual = [], None
+        for x in tasks:
+            if etapa(x) != atual:
+                atual = etapa(x)
+                itens.append((ETAPAS[atual],))
+            col = c(ESPERA[x["statusId"]].ljust(w), 250) if atual == 3 else tag_prazo(x, w)
+            st = ESPERA.get(x["statusId"]) or x["statusId"].replace("_", " ") if atual == 0 else ""
+            tit = corta(x["title"], (shutil.get_terminal_size().columns or 100) - w - len(st) - 12)
+            itens.append((f"{col}  " if w else "") + tit + (dim(f"  · {st}") if st else ""))
         nome = c(cfg["projetos"][pid]["nome"], cor_projeto(pid), True)
-        op = menu(f"{nome}  minhas tasks", [f"{status(x['statusId']):<30} {x['title']}" for x in tasks],
-                  c("s", 39, True) + " sessão: várias tasks num chat só  " + c("l", 39, True) + " terminal livre  "
-                  + dim("·  c trocar repo  ·"))
-        if op in ("0", ""):
+        op = menu(f"{nome} · minhas tasks ({len(tasks)})", itens or [(dim("nenhuma task sua neste projeto"),)],
+                  [("s", "sessão (várias tasks num chat)"), ("l", "terminal livre"), ("c", "trocar repo"),
+                   ("enter", "atualiza")], teclas="slc")
+        if op == "0":
             return
+        if op == "":
+            buscado = 0
         if op == "c":
             configurar(cfg, pid)
         elif op == "l":
@@ -464,35 +1661,66 @@ def tela_projeto(cfg, pid):
 
 
 def principal():
-    cfg = load()
+    tasks, buscado = [], 0
     while True:
         try:
-            tasks = mcp("minhas_tasks")
-            pids = sorted({x["projectId"] for x in tasks}, key=lambda p: cfg["projetos"].get(p, {}).get("nome", "~" + p))
-            linhas = []
-            for p in pids:
-                pc = cfg["projetos"].get(p)
-                n = sum(x["projectId"] == p for x in tasks)
-                info = f"{n} tasks  " + (pc["repo"] if pc else "")
-                linhas.append(f"{c(pc['nome'], cor_projeto(p), True)} {dim(info)}" if pc
-                              else f"{p} {dim(f'{n} tasks')}  {c('sem repo, escolha para configurar', 214)}")
+            cfg = load()  # relê a cada volta: o config pode ter mudado fora deste menu
+            cronometro("ligar")  # primeira vez no jfy hoje = início da jornada
+            if time.time() - buscado > 60:  # voltar de um submenu não espera o Journify; Enter força
+                tasks, buscado = mcp("minhas_tasks"), time.time()
+            urgentes = foco(tasks)  # prazo vencido / nos próximos dias / crítica, de todos os projetos
+            # configurados sem task aberta também aparecem (embaixo): manutenção às vezes pede um terminal livre ou sessão
+            n_tasks = lambda p: sum(x["projectId"] == p for x in tasks)
+            pids = sorted({x["projectId"] for x in tasks} | set(cfg["projetos"]),
+                          key=lambda p: (not n_tasks(p), cfg["projetos"].get(p, {}).get("nome", "~" + p)))
+            larg = shutil.get_terminal_size().columns or 100
+
+            def linha_proj(p):
+                pc, n = cfg["projetos"].get(p), n_tasks(p)
+                qtd = dim(f"{n:>2} task{'s' if n != 1 else ''}") if n else ""
+                if pc:
+                    return c(pc["nome"][:12].ljust(12), cor_projeto(p), True) + " " + qtd
+                exemplo = next((x["title"] for x in tasks if x["projectId"] == p), "")  # o MCP não dá o nome do projeto
+                return (dim(p[:8].ljust(12)) + " " + qtd + "  " + c("sem repo: escolha para configurar", 214)
+                        + dim(f"  ex.: {corta(exemplo, 40)}"))
+            com, sem = [p for p in pids if n_tasks(p)], [p for p in pids if not n_tasks(p)]  # = ordem de pids
+            itens = (([("FOCO",)] + [linha_foco(cfg, t, larg) for t in urgentes] if urgentes else [])
+                     + ([("PROJETOS",)] + [linha_proj(p) for p in com] if com else [])
+                     + ([("SEM TASK", "manutenção: terminal livre ou sessão")] + [linha_proj(p) for p in sem] if sem else []))
             abas = int(subprocess.run(TMUX + ["display", "-p", "#{session_windows}"], capture_output=True, text=True).stdout.strip() or 1)
-            op = menu("Projetos Journify", linhas, c("l", 39, True) + " terminal livre  "
-                      + dim(f"·  {abas - 1} aba(s) rodando, clique nelas lá embaixo  ·"), "sair")
-            if op in ("0", ""):
+            dia = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"][date.today().weekday()] + date.today().strftime(" %d/%m")
+            op = menu(f"jfy · {dia}" + (f" · {abas - 1} aba(s) aberta(s) na barra de baixo" if abas > 1 else ""), itens,
+                      [("l", "terminal livre"), ("r", "reuniões"), ("h", "horas"), ("t", "tema"), ("enter", "atualiza")],
+                      "sai", teclas="lrht")
+            if op == "":  # Enter não sai mais: atualiza as tasks
+                buscado = 0
+                continue
+            if op == "0":
                 if abas > 1 and ask("Tasks ainda rodando. Sair e deixar elas rodando? Volte com 'jfy'. (s/n) ", "s") == "s":
                     subprocess.run(TMUX + ["detach-client"])
                     continue
                 return
+            if op == "t":
+                tela_tema()
+            if op == "r":
+                tela_reunioes(cfg)
+            if op == "h":
+                abrir_aba("horas", "horas", "--horas")
             if op == "l":
                 ultimo = next((os.path.dirname(x["repo"]) for x in cfg["projetos"].values()), os.path.expanduser("~/Documents"))
                 pasta = escolher_pasta(ultimo)
                 if pasta:
                     abrir_aba(os.path.basename(pasta)[:20] + ": livre", pasta, "--livre", pasta)
-            if op.isdigit() and 1 <= int(op) <= len(pids):
-                pid = pids[int(op) - 1]
+            k = int(op) if op.isdigit() else 0
+            if 1 <= k <= len(urgentes):
+                t = urgentes[k - 1]
+                if t["projectId"] in cfg["projetos"] or configurar(cfg, t["projectId"]):
+                    tela_task(cfg, t)
+            elif 1 <= k - len(urgentes) <= len(pids):
+                pid = pids[k - len(urgentes) - 1]
                 if pid in cfg["projetos"] or configurar(cfg, pid):
                     tela_projeto(cfg, pid)
+                buscado = 0  # mexeu num projeto (status, prazo, task nova): relê ao voltar
         except Exception as e:  # rede/Journify fora: mostra e volta ao menu
             ask(c(f"Erro: {e}. Enter para tentar de novo.", 203))
 
@@ -507,11 +1735,42 @@ def main():
         return sessao(a[1])
     if a[:1] == ["--inicio"]:
         return inicio(a[1])
+    if a[:1] == ["--relogio"]:
+        return relogio()
+    if a[:1] == ["--pausar"]:  # Ctrl-b p
+        return cronometro("alternar")
+    if a[:1] == ["--zerar"]:  # Ctrl-b r
+        return cronometro("zerar")
+    if a[:1] == ["--notificar"]:
+        return notificar_dia()
+    if a[:1] == ["--hoje"]:  # o dia sem abrir o menu
+        titulo, linhas = resumo_dia()
+        return print(c(titulo, 39, True) + "\n" + "\n".join(linhas))
+    if a[:1] == ["--login"]:  # Google: agenda e Gmail
+        return login()
+    if a[:1] == ["--horas"]:  # jfy --horas [data]: tabela para o minhas-horas
+        d = ler_data(a[1], futuro=False) if a[1:] else None
+        if a[1:] and not d:
+            return print(c(f"Data inválida: {a[1]}", 203))
+        return tela_horas(date.fromisoformat(d) if d else None)  # sem data: hoje
+    if a[:1] == ["--reuniao"]:
+        return preparar(a[1])
+    if a[:1] == ["--fechar"]:  # fechamento de uma task em segundo plano
+        return fechar_agora(*a[1:5])
+    if a[:1] == ["--email"]:  # clique no ✉ da barra
+        return ler_emails()
+    if a[:1] == ["--entrar"]:  # Ctrl-b m
+        return entrar()
+    if a[:1] == ["--atalhos"]:  # Ctrl-b c
+        return atalhos()
+    if a[:1] == ["--avisar"]:  # hook do Claude Code
+        return avisar()
     if a[:1] == ["--fim"]:
         return fim(a[1], int(a[a.index("--min") + 1]) if "--min" in a else None, "--pronta" in a, "--nada" in a)
     if os.path.basename(os.environ.get("TMUX", "").split(",")[0]) == "jfy":
         return principal()
     # fora do tmux: entra (ou volta) na sessão jfy, garantindo a aba do menu
+    tmux_conf()
     if subprocess.run(TMUX + ["has-session", "-t", "jfy"], capture_output=True).returncode == 0:
         abas = subprocess.run(TMUX + ["list-windows", "-t", "jfy", "-F", "#{window_name}"], capture_output=True, text=True).stdout.split("\n")
         if "menu" not in abas:
@@ -521,30 +1780,214 @@ def main():
 
 
 def selftest():
+    import base64, glob
+    for x in glob.glob(os.path.join(RUN_DIR, "teste-*")):
+        shutil.rmtree(x) if os.path.isdir(x) else os.remove(x)
     d = {"type": "doc", "content": [
         {"type": "heading", "attrs": {"level": 2}, "content": [{"type": "text", "text": "Título"}]},
         {"type": "bulletList", "content": [{"type": "listItem", "content": [
             {"type": "paragraph", "content": [{"type": "text", "text": "item"}]}]}]}]}
     assert doc_texto(json.dumps(d)) == "\n## Título\n- item\n", repr(doc_texto(json.dumps(d)))
+    # descrição limpa: imagem solta vira o número do anexo, sem markdown cru nem bloco de código cercado
+    ax = [{"id": "cu_aaa-1.png", "url": "u1", "contentType": "image/png"}, {"id": "x.pdf", "url": "u2"},
+          {"id": "cu_bbb-2.png", "url": "u3", "contentType": "image/png"}]
+    ls = [re.sub(r"\x1b\[[0-9;]*m", "", l) for l in descricao(
+        "# Meta\n**Contexto.** algo\n\n\n![](https://x/bbb-2/image.png)\n* * *\n*   item\n```plain\ncódigo\n```", ax, 60)]
+    assert ls == ["Meta", "", "Contexto. algo", "", "▣ imagem a3", "", "• item", "│ código"], ls
+    assert faixas([1, 2, 3, 4, 7, 9, 10]) == "a1–a4, a7, a9–a10"
+    assert corta(" abcdef ", 4) == "abc…" and corta("abc", 4) == "abc"
+    assert [etapa({"statusId": s, "dueDate": None, "priority": "media"}) for s in ("em_progresso", "em_teste", "bloqueado", "em_aberto")] == [1, 3, 4, 2]
     assert slug("Estudar o escopo do projeto!") == "estudar-o-escopo-do-projeto"
     assert fmt_min(83) == "1h 23min" and fmt_min(5) == "5min"
     assert not ocupado("/nao/existe")
-    global mcp
+    assert [ler_minutos(x) for x in ("80", "1h20", "1h", "1:05", "45min", "2 h 5", "x", "")] == [80, 80, 60, 65, 45, 125, None, None]
+    cfg_t = {"projetos": {"a": {"nome": "alpha"}, "r": {"nome": "rpa alpha"}, "p1": {"nome": "plastamp 1"}, "p2": {"nome": "plastamp 2"}}}
+    assert projetos_no_texto(cfg_t, "Kick-off RPA Alpha Plast") == ["r"] and projetos_no_texto(cfg_t, "Entrega Alpha Plast") == ["a"]
+    assert projetos_no_texto(cfg_t, "Alinhamento de infra Plastamp 1-2") == ["p1"] and projetos_no_texto(cfg_t, "Daily") == []
+    b64 = lambda t: base64.urlsafe_b64encode(t.encode()).decode().rstrip("=")
+    so_html = {"mimeType": "multipart/mixed", "parts": [
+        {"mimeType": "multipart/alternative", "parts": [{"mimeType": "text/html", "body": {"data": b64(
+            "<html><head><style>p{}</style></head><body><p>Olá &amp; até</p><p>linha<br>dois</p></body></html>")}}]},
+        {"mimeType": "application/pdf", "filename": "proposta.pdf", "body": {"attachmentId": "x"}}]}
+    assert corpo_email(so_html) == ("Olá & até\nlinha\ndois", ["proposta.pdf"]), corpo_email(so_html)
+    com_plain = {"mimeType": "multipart/alternative", "parts": [{"mimeType": "text/plain", "body": {"data": b64("oi\n")}},
+                                                               {"mimeType": "text/html", "body": {"data": b64("<b>x</b>")}}]}
+    assert corpo_email(com_plain) == ("oi", [])
+    global TEMA
+    for nome, t in TEMAS.items():  # cor de aba igual a um papel seria trocada duas vezes
+        assert not set(t.get("projetos", [])) & {k for k in t if k != "projetos"}, nome
+    for nome, t in TEMAS.items():
+        assert set(t.get("icones", {})) <= set(ICONES), nome
+        i = {k: ic(k, t) for k in ICONES}
+        assert all(len(v) == 1 for v in i.values()), (nome, i)  # nome que não está no fonte/icones.txt
+        assert unicodedata.east_asian_width(i["cheio"]) != "W" != unicodedata.east_asian_width(i["vazio"]), nome
+    TEMA = TEMAS["Dracula"]
+    assert tematizar("bg=colour236,fg=colour250 #[fg=colour39] colour232") == "bg=colour236,fg=colour253 #[fg=colour141] colour232"
+    assert c("x", 39) == "\033[38;5;141mx\033[0m" and cor_projeto("a") in TEMAS["Dracula"]["projetos"]
+    TEMA = {}
+    h = date(2026, 11, 21)
+    assert ler_data("25/11", h) == "2026-11-25" and ler_data("10/01", h) == "2027-01-10"  # já passou: ano que vem
+    assert ler_data("25/12/26", h) == "2026-12-25" and ler_data("+3", h) == "2026-11-24"
+    assert ler_data("2026-12-01", h) == "2026-12-01"
+    assert ler_data("31/02", h) is None and ler_data("amanhã", h) is None and ler_data("", h) is None
+    assert ler_data("-1", h) == "2026-11-20" and ler_data("+0", h) == "2026-11-21"
+    assert ler_data("20/11", h, futuro=False) == "2026-11-20" and ler_data("20/11", h) == "2027-11-20"
+    # horas: mínimo do dia útil com quebrado, reunião não infla, fim de semana só o fator, sem regra = medido
+    seg, dom = date(2026, 11, 23), date(2026, 11, 22)
+    x, y, daily = ("p", "Desenvolvimento", "x"), ("p", "Desenvolvimento", "y"), (None, "Reunião", "Daily")
+    L, regra = {x: 120, y: 60, daily: 30}, {"fator": 1.2, "minimo": 600}
+    r = inflar(L, seg, regra)
+    assert 605 <= sum(r.values()) <= 655 and all(v % 5 == 0 for v in r.values()), r
+    assert r == inflar(L, seg, regra) and r[daily] == 30 and r[x] > r[y] > 60, r
+    assert inflar(L, dom, regra) == {x: 150, y: 75, daily: 30}  # 210 × 1.2 = 252 -> 255
+    assert inflar(L, seg, {}) == L and inflar({}, seg, regra) == {}
+    assert inflar({x: 560}, seg, regra) == {x: 675}  # 672 passou do mínimo: sem quebrado
+    d = lambda n: (date.today() + timedelta(days=n)).isoformat()
+    ts = [{"id": "longe", "dueDate": d(30), "priority": "media"}, {"id": "atrasada", "dueDate": d(-2), "priority": "media"},
+          {"id": "critica", "dueDate": None, "priority": "critica"}, {"id": "em3", "dueDate": d(3), "priority": "baixa"},
+          {"id": "alta", "dueDate": None, "priority": "alta"}, {"id": "hoje", "dueDate": d(0) + "T03:00:00Z", "priority": "media"}]
+    assert [t["id"] for t in foco(ts)] == ["atrasada", "hoje", "em3", "critica"], foco(ts)
+    global mcp, DIA, USO
+    DIA = os.path.join(RUN_DIR, "teste-dia.json")
+    cronometro("ligar")
+    assert cronometro()[1]
+    cronometro("alternar")
+    assert not cronometro()[1]  # pausou
+    cronometro("ligar")
+    assert not cronometro()[1]  # 'ligar' não tira da pausa
+    d = json.load(open(DIA))
+    d["blocos"] = [[time.time() - 3 * 3600, time.time() - 3600], [time.time() - 600, None]]
+    json.dump(d, open(DIA, "w"))
+    assert cronometro() == (130, True), cronometro()  # 2h pausadas antes + 10min rodando
+    cronometro("zerar")
+    assert cronometro() == (0, True)
+    os.remove(DIA)
+    USO = os.path.join(RUN_DIR, "teste-uso.json")
+    json.dump({"rate_limits": {"five_hour": {"used_percentage": 83, "resets_at": time.time() + 600},
+                               "seven_day": {"used_percentage": 40, "resets_at": time.time() - 1}}}, open(USO, "w"))
+    assert "▰" * 8 + "▱" * 2 + " 83%" in barra_ia() and "semana 0%" in barra_ia(), barra_ia()  # semana já resetou
+    TEMA = TEMAS["Dracula"]
+    b = barra_ia()  # vampiro empurrando: entre o cheio e o vazio, no quadro do segundo, com 2 caracteres
+    assert any(PIXEL["coracao"] * 8 + PIXEL[q] + PIXEL["coracao-vazio"] * 2 + " 83%" in b for q in TEMA["andador"]), b
+    assert ic("email") == "\ue4a2" and all(len(PIXEL[q]) == 2 for t in TEMAS.values() for q in t.get("andador", []))
+    TEMA = {}
+    json.dump({"model": {}}, open(USO, "w"))  # sessão nova, ainda sem rate_limits: mantém a última boa
+    assert " 83%" in barra_ia(), barra_ia()
+    os.remove(USO)
+    os.remove(USO + ".ok")
+    # agenda: tira dia inteiro, cancelada, recusada por mim e ausência; aceita fuso com offset e com Z
+    it = lambda **k: dict({"summary": "R", "start": {"dateTime": "2026-11-23T10:00:00-03:00"},
+                           "end": {"dateTime": "2026-11-23T10:30:00-03:00"}}, **k)
+    evs = reunioes([it(summary="Daily"), it(start={"date": "2026-11-23"}, end={"date": "2026-11-24"}),
+                    it(status="cancelled"), it(attendees=[{"self": True, "responseStatus": "declined"}]),
+                    it(eventType="outOfOffice"), it(eventType="workingLocation"),
+                    it(summary="Cedo", start={"dateTime": "2026-11-23T11:00:00Z"}, end={"dateTime": "2026-11-23T11:15:00Z"}),
+                    it(summary="Aceita", attendees=[{"self": True, "responseStatus": "accepted"}, {"responseStatus": "declined"}])])
+    assert [e[2] for e in evs] == ["Cedo", "Aceita", "Daily"], evs
+    assert evs[0][0] == datetime.fromisoformat("2026-11-23T11:00:00+00:00").timestamp()
+    assert evs[2][1] - evs[2][0] == 1800
+    # link da chamada: Meet, senão vídeo do conferenceData, senão local que é link
+    evs = {e[2]: e[3:] for e in reunioes([
+        it(hangoutLink="https://meet/x", attendees=[{"self": True}, {"displayName": "Ana"}, {"email": "b@x"}], description="pauta"),
+        it(summary="Z", conferenceData={"entryPoints": [{"entryPointType": "phone", "uri": "tel:1"},
+                                                        {"entryPointType": "video", "uri": "https://zoom/y"}]}),
+        it(summary="L", location="https://teams/z"), it(summary="S", location="Sala 2")])}
+    assert evs == {"R": ["https://meet/x", "Participantes: Ana, b@x\npauta"], "Z": ["https://zoom/y", ""],
+                   "L": ["https://teams/z", ""], "S": ["", ""]}, evs
+    # tempo da task sem as reuniões do meio; a que ainda não começou não conta
+    global eventos_hoje, HORAS_DIR
+    agora, HORAS_DIR = time.time(), os.path.join(RUN_DIR, "teste-horas")
+    os.makedirs(HORAS_DIR, exist_ok=True)
+    eventos_hoje = lambda forcar=False: [[agora - 3600, agora - 1800, "Daily"], [agora + 60, agora + 600, "Futura"]]
+    assert minutos_uteis(agora - 7200, agora) == 90
+    eventos_hoje = lambda forcar=False: []
     chamadas = []
     mcp = lambda tool, **kw: chamadas.append((tool, kw))  # Journify falso
     inicio("TESTE")
     open(os.path.join(RUN_DIR, "TESTE.t"), "w").write(str(time.time() - 125 * 60))
     fim("TESTE", pronta=True)
     assert chamadas[1][1]["texto"].startswith("Tempo gasto: 2h 05min"), chamadas
+    log = [json.loads(l) for f in os.listdir(HORAS_DIR) for l in open(os.path.join(HORAS_DIR, f))]
+    assert [(e["tid"], e["min"], e["modo"]) for e in log] == [("TESTE", 125, "sessao")], log
+    shutil.rmtree(HORAS_DIR)
     assert chamadas[2] == ("atualizar_task", {"taskId": "TESTE", "statusId": STATUS_FIM})
     assert not os.path.exists(os.path.join(RUN_DIR, "TESTE.t"))
     inicio("TESTE")
     fim("TESTE", nada=True)
     assert len(chamadas) == 4 and not os.path.exists(os.path.join(RUN_DIR, "TESTE.t"))
+    # token do Google: reaproveita do Chaves até 5min antes de vencer, depois renova
+    global EMAIL, load, google_token, gmail_nao_lidos, gmail_cabecalho, notificar, chaves, http_json
+    load = lambda: {"projetos": {}, "google": {"client_id": "x", "client_secret": "y"}}
+    cofre, pedidos = {"jfy-google": "RT"}, []
+    chaves = lambda serv, valor=None: cofre.get(serv, "") if valor is None else cofre.update({serv: valor})
+    def http_falso(url, dados=None, token=None):
+        pedidos.append(dados)
+        return {"access_token": f"AT{len(pedidos)}", "expires_in": 3600}
+    http_json = http_falso
+    assert google_token() == "AT1" and google_token() == "AT1" and len(pedidos) == 1
+    assert pedidos[0]["refresh_token"] == "RT"
+    cofre["jfy-google-acesso"] = json.dumps({"token": "AT1", "expira": time.time() + 200})  # vence em menos de 5min
+    assert google_token() == "AT2" and len(pedidos) == 2
+    # email: a 1ª olhada só marca a base; id novo avisa e aparece na barra; erro não re-tenta a cada 15s
+    EMAIL, avisos, caixa = os.path.join(RUN_DIR, "teste-email.json"), [], {"ids": ["b", "a"]}  # ids em hex
+    load = lambda: {"projetos": {}, "google": {"client_id": "x", "client_secret": "y"}}
+    def token_falso():
+        if caixa.get("erro"):
+            raise RuntimeError("revogado")
+        return "tok"
+    google_token, notificar = token_falso, lambda titulo, texto, **kw: avisos.append(texto)
+    gmail_nao_lidos, gmail_cabecalho = lambda tok: caixa["ids"], lambda tok, mid: f"Ana #{mid}: Oi"
+    assert email_barra() == "#[range=user|email fg=colour39]✉ 2#[norange]  " and not avisos
+    caixa["ids"] = ["c", "b", "a"]
+    assert email_barra() == "#[range=user|email fg=colour39]✉ 2#[norange]  "  # acabou de olhar: não olha o Gmail de novo
+    st = json.load(open(EMAIL)); st["checado"] = 0; json.dump(st, open(EMAIL, "w"))
+    assert "Ana ##c: Oi" in email_barra() and avisos == ["Ana #c: Oi"]
+    olhar = lambda: (json.dump(dict(json.load(open(EMAIL)), checado=0, chegou=0), open(EMAIL, "w")), email_barra())[1]
+    caixa["ids"] = ["c", "b", "a", "9"]  # um antigo entrou na janela (li outros): não é novo
+    assert olhar() == "#[range=user|email fg=colour39]✉ 4#[norange]  " and len(avisos) == 1
+    caixa["ids"] = []
+    assert olhar() == "#[range=user|email fg=colour244]✉#[norange]  "  # caixa zerada: só o ícone
+    caixa["ids"] = ["d"]
+    assert "Ana ##d" in olhar() and avisos[-1] == "Ana #d: Oi"  # chegou com a caixa zerada: avisa
+    caixa["erro"] = True
+    st = json.load(open(EMAIL)); st.update(checado=0, chegou=0); json.dump(st, open(EMAIL, "w"))
+    assert "erro" in email_barra() and time.time() - json.load(open(EMAIL))["checado"] < 5
+    os.remove(EMAIL)
+    # reuniões: o que você deu (r ou h) vale sobre o palpite pelo título; nome livre vira o projeto da linha
+    global REUNIOES, reunioes_do_dia
+    REUNIOES, agora = os.path.join(RUN_DIR, "teste-reunioes.json"), time.time()
+    load = lambda: {"projetos": {"a": {"nome": "alpha"}, "r": {"nome": "rpa alpha"}}, "google": {"client_id": "x"}}
+    reunioes_do_dia = lambda dia: [[agora - 7200, agora - 5400, "Entrega Alpha Plast"], [agora - 3600, agora - 3000, "Alinhamento Decal"],
+                                   [agora + 600, agora + 1200, "Futura"]]
+    linhas, reun = horas_do_dia(date.today())
+    assert linhas == {("a", "Reunião", "Entrega Alpha Plast"): 30, (None, "Reunião", "Alinhamento Decal"): 10}, linhas
+    assert reun[("a", "Reunião", "Entrega Alpha Plast")][2] and reun[(None, "Reunião", "Alinhamento Decal")][1] == "Alinhamento Decal"
+    gravar_reuniao(agora - 7200, "Entrega Alpha Plast", {"pid": "r"})
+    gravar_reuniao(agora - 3600, "Alinhamento Decal", {"projeto": "Souv", "contexto": "protótipos Decal"})
+    linhas, reun = horas_do_dia(date.today())
+    assert linhas == {("r", "Reunião", "Entrega Alpha Plast"): 30, ("Souv", "Reunião", "protótipos Decal"): 10}, linhas
+    assert not any(x[2] for x in reun.values()) and nome_projeto(load(), "Souv") == "Souv" and nome_projeto(load(), "r") == "rpa alpha"
+    # horas: cada linha é um lançamento; o ajuste (horas, categoria, removida) vale só no dia e se desfaz
+    HORAS_DIR, hoje = os.path.join(RUN_DIR, "teste-horas"), date.today()
+    os.makedirs(HORAS_DIR, exist_ok=True)
+    cfg_h = dict(load(), horas={})
+    itens, med, pela_regra = itens_horas(cfg_h, hoje)
+    assert [(x["p"], x["lanc"]) for x in itens] == [("r", 30), ("Souv", 10)] and med == pela_regra == 40, itens
+    entrega, decal = itens
+    gravar_ajuste(hoje, decal["kid"], min=25, cat="Análise e estudo")
+    gravar_ajuste(hoje, entrega["kid"], fora=True)
+    itens, med, _ = itens_horas(cfg_h, hoje)
+    assert [(x["p"], x["cat"], x["lanc"], x["fora"]) for x in itens] == [("Souv", "Análise e estudo", 25, False),
+                                                                         ("r", "Reunião", 0, True)] and med == 10, itens
+    gravar_ajuste(hoje, entrega["kid"], fora=False)
+    gravar_ajuste(hoje, decal["kid"], min=None, cat=None)
+    assert json.load(open(ajustes_arq(hoje))) == {} and [x["lanc"] for x in itens_horas(cfg_h, hoje)[0]] == [30, 10]
+    shutil.rmtree(HORAS_DIR)
+    os.remove(REUNIOES)
     print("ok")
 
 
 if __name__ == "__main__":
-    for d in (MEM_DIR, RUN_DIR, WT_DIR):
+    for d in (MEM_DIR, RUN_DIR, WT_DIR, HORAS_DIR):
         os.makedirs(d, exist_ok=True)
     selftest() if sys.argv[1:] == ["--selftest"] else main()
