@@ -1,0 +1,17 @@
+/* Contexto: a cesta à esquerda (com os enviados embaixo) e o pedido e o destino num painel de 380 à direita. */
+.cx { background: var(--fundo); }
+.cx-lista { flex: 1; min-width: 0; min-height: 0; border-right: 1px solid var(--borda); }
+.cx-topo { padding: 20px; }
+.cx-vazio { flex: 1; display: grid; place-content: center; justify-items: center; gap: 10px; text-align: center; max-width: 440px; margin: 0 auto; }
+.cx-itens { padding: 0 16px 12px; }
+.cx-item { display: flex; align-items: flex-start; gap: 10px; padding: 6px 8px; }
+.cx-icone { flex: none; width: 20px; margin-top: 1px; }
+.cx-uma { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.cx-legenda { font-size: 11.5px; }
+.cx-enviados { padding: 16px; background: var(--superficie); border-top: 1px solid var(--borda); }
+.cx-painel { width: 380px; flex: none; }
+.cx-cheio { justify-content: center; }
+.cx-revisao { gap: 8px; padding: 12px; border-radius: 10px; background: var(--fundo); }
+.cx-alerta { display: flex; gap: 6px; align-items: flex-start; color: #f5a524; font-size: 12.5px; }
+.cx-laranja { color: #f5a524; flex: none; }
+.cx-verde { color: #2fbf71; flex: none; }

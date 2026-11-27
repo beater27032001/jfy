@@ -1,0 +1,101 @@
+/* Agenda (telas/Agenda.tsx): topo, "Reunião com…", grade de horas (dia e semana), mês e os modais do evento. */
+.ag { height: 100%; display: flex; flex-direction: column; min-height: 0; }
+.ag-topo { display: flex; align-items: center; gap: 12px; padding: 12px 20px; }
+.ag-topo h1 { font-size: 24px; flex: none; }
+.ag-subtitulo { font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ag-navega { gap: 4px; }
+.ag-aviso { padding: 0 20px 8px; }
+.ag-laranja { color: #f5a524; display: inline-flex; }
+.ag-verde { color: #2fbf71; flex: none; }
+.ag-vermelho { color: var(--perigo); flex: none; }
+
+.ag-com { display: flex; align-items: center; gap: 8px; padding: 0 20px 10px; border-bottom: 1px solid var(--borda); }
+/* as sugestões de contato flutuam por cima da grade, sem empurrar a agenda para baixo */
+.ag-com .campo-emails .sugestoes { position: absolute; top: 100%; left: 0; right: 0; z-index: 5; margin-top: 2px; }
+.ag-pessoas { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; min-width: 0; flex: 1; }
+.ag-pessoas .chip { padding: 3px 8px; }
+
+.ag-corpo { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* ---------- grade de horas ---------- */
+.ag-grade { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+/* o cabeçalho reserva o lugar da barra de rolagem do corpo: as colunas ficam alinhadas */
+.ag-faixa { display: flex; overflow: hidden; scrollbar-gutter: stable; }
+.ag-grade-corpo { flex: 1; min-height: 0; overflow-y: auto; scrollbar-gutter: stable; display: flex; align-items: flex-start; border-top: 1px solid var(--borda); }
+.ag-col-hora { width: 48px; flex: none; font-size: 10.5px; display: flex; align-items: flex-start; justify-content: center; }
+.ag-grade-corpo .ag-col-hora { display: block; }
+.ag-hora { text-align: right; padding-right: 6px; font-size: 10.5px; line-height: 1; }
+.ag-dia-cab { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 0; }
+.ag-num {
+  width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font-size: 17px;
+  border: 0; background: none; color: var(--texto); font-family: inherit; padding: 0;
+}
+.ag-num.hoje { background: var(--primaria); color: #fff; font-weight: 700; }
+.ag-num.pequeno { width: 24px; height: 24px; font-size: 13.5px; cursor: pointer; flex: none; }
+.ag-num.pequeno:hover:not(.hoje) { background: color-mix(in srgb, var(--primaria) 14%, transparent); }
+.ag-inteiros { padding-bottom: 4px; }
+.ag-inteiros-dia { flex: 1; min-width: 0; display: grid; gap: 2px; padding: 0 2px; align-content: start; }
+
+.ag-coluna {
+  position: relative; flex: 1; min-width: 0; border-left: 1px solid var(--borda);
+  background-image: linear-gradient(var(--borda) 1px, transparent 1px); /* a linha de cada hora */
+}
+.ag-agora { position: absolute; left: 0; right: 0; height: 1.5px; background: #e5484d; pointer-events: none; z-index: 2; }
+.ag-agora::before { content: ''; position: absolute; left: -4px; top: -3.25px; width: 8px; height: 8px; border-radius: 50%; background: #e5484d; }
+
+.ag-bloco {
+  position: absolute; overflow: hidden; display: flex; flex-direction: column; gap: 1px; align-items: flex-start;
+  padding: 2px 4px; border: 0; border-left: 3px solid var(--cor); border-radius: 5px; text-align: left; cursor: pointer;
+  background: color-mix(in srgb, var(--cor) 18%, var(--fundo)); color: var(--texto); font: 11.5px 'Roboto';
+}
+.ag-bloco strong { font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ag-bloco span { font-size: 10.5px; white-space: nowrap; }
+.ag-bloco:hover { filter: brightness(1.08); }
+.ag-bloco.recusado, .ag-chip.recusado { opacity: .5; }
+.ag-bloco.recusado strong, .ag-chip.recusado .ag-chip-titulo { text-decoration: line-through; }
+
+.ag-chip {
+  display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; padding: 1px 4px; border: 0; border-radius: 4px;
+  background: none; color: var(--texto); font: 11.5px 'Roboto'; text-align: left; cursor: pointer;
+}
+.ag-chip.inteiro { background: color-mix(in srgb, var(--cor) 25%, transparent); }
+.ag-chip:hover { background: color-mix(in srgb, var(--cor) 18%, transparent); }
+.ag-chip span { flex: none; }
+.ag-chip .ag-chip-titulo { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- mês ---------- */
+.ag-mes { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.ag-mes-cab { display: grid; grid-template-columns: repeat(7, 1fr); border-bottom: 1px solid var(--borda); }
+.ag-mes-cab span { text-align: center; padding: 6px 0; font-size: 11.5px; font-weight: 600; color: var(--texto2); }
+.ag-mes-semana { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(7, 1fr); border-bottom: 1px solid var(--borda); }
+.ag-celula { min-width: 0; overflow: hidden; padding: 4px; display: flex; flex-direction: column; gap: 2px; border-left: 1px solid var(--borda); }
+.ag-celula.fora { background: color-mix(in srgb, var(--texto2) 5%, transparent); }
+.ag-celula.fora .ag-num:not(.hoje) { color: var(--texto2); }
+.ag-mais { border: 0; background: none; font: 11.5px 'Roboto'; text-align: left; padding: 0 4px; cursor: pointer; }
+
+/* ---------- evento ---------- */
+.ag-detalhe { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.ag-secao { gap: 4px; }
+.ag-rotulo { font-size: 11.5px; font-weight: 600; color: var(--texto2); }
+.ag-descricao { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.ag-fixo { flex: none; white-space: nowrap; }
+/* no modal estreito, o contexto desce para a linha de baixo em vez de espremer */
+.ag-horas { flex-wrap: wrap; }
+.ag-horas .campo { flex: 1; width: auto; min-width: 160px; }
+.ag-form { gap: 12px; }
+.ag-titulo-campo { font-size: 16px; }
+.ag-rotulo-data { width: 44px; flex: none; }
+
+/* as fotos das pessoas: no título do bloco (agenda de outra pessoa), embaixo dele (quem vai junto) e nos convidados */
+.ag-bloco-titulo { display: flex; align-items: flex-start; gap: 4px; }
+.ag-bloco-titulo .avatar { margin-top: 1px; }
+.ag-bloco-gente { display: flex; align-items: center; margin-top: 3px; font-size: 10px; }
+.ag-bloco-gente .avatar { box-shadow: 0 0 0 1px var(--fundo); }
+.ag-bloco-gente .avatar + .avatar { margin-left: -4px; }
+.ag-bloco-gente .texto2 { margin-left: 4px; }
+.ag-convidado-foto { position: relative; display: inline-flex; flex: none; }
+.ag-convidado-resposta {
+  position: absolute; right: -4px; bottom: -4px; display: grid; place-items: center;
+  background: var(--fundo); border-radius: 50%; line-height: 0;
+}
+.ag-convidado-resposta svg { width: 11px; height: 11px; }

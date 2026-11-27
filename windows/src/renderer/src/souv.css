@@ -1,0 +1,265 @@
+/* A identidade visual da Souv (manual v1, 2024), a mesma do app do Mac (app/Sources/JFY/Souv.swift): no escuro,
+   Midnight Blue e Eletric Cyan; no claro, Cloud White e Vivid Blue. Lexend nos títulos, Roboto no texto. */
+@font-face { font-family: 'Lexend'; src: url('@marca/Lexend.ttf'); font-weight: 100 900; }
+@font-face { font-family: 'Roboto'; src: url('@marca/Roboto.ttf'); font-weight: 100 900; }
+@font-face { font-family: 'JFY Mono'; src: url('@fonte/JFYMono.ttf'); }
+
+:root {
+  --fundo: #f7f7f7;
+  --superficie: #ffffff;
+  --superficie2: #eef0f7;
+  --borda: #dce0ec;
+  --texto: #0a0e2d;
+  --texto2: #616161;
+  --primaria: #2054e1;
+  --destaque: #2054e1;
+  --perigo: #d93a3f;
+  --barra: rgba(238, 240, 247, 0.85);
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fundo: #0a0e2d;
+    --superficie: #12183a;
+    --superficie2: #1c244a;
+    --borda: #272f53;
+    --texto: #f7f7f7;
+    --texto2: #b0b0b0;
+    --destaque: #61fafa;
+    --perigo: #f2555a;
+    --barra: rgba(10, 14, 45, 0.82);
+  }
+}
+
+* { box-sizing: border-box; }
+html, body, #raiz { height: 100%; margin: 0; }
+body {
+  font: 13px 'Roboto', system-ui, sans-serif;
+  background: var(--fundo);
+  color: var(--texto);
+  overflow: hidden;
+  user-select: none;
+}
+::selection { background: color-mix(in srgb, var(--primaria) 35%, transparent); }
+h1, h2, h3 { font-family: 'Lexend', sans-serif; font-weight: 300; margin: 0; }
+
+/* ---------- casca: barra de cima, barra lateral, telas ---------- */
+.app { display: grid; grid-template-columns: 200px 1fr; grid-template-rows: 44px 1fr; height: 100%; }
+.topo {
+  grid-column: 1 / -1;
+  display: flex; align-items: center; gap: 16px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--borda);
+  background: var(--barra);
+}
+.marca { display: flex; align-items: center; gap: 8px; }
+.marca .simbolo { width: 20px; height: 20px; background: var(--destaque); mask: var(--svg) center / contain no-repeat; }
+.marca .nome { width: 52px; height: 14px; background: var(--texto); mask: var(--svg) center / contain no-repeat; }
+.marca .divisor { width: 1px; height: 16px; background: var(--borda); }
+.marca .jfy { font: 500 15px 'Lexend'; letter-spacing: 2px; }
+
+.lateral { background: var(--barra); border-right: 1px solid var(--borda); overflow-y: auto; padding: 8px; }
+.linha {
+  position: relative;
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 8px; margin: 1px 0;
+  border-radius: 8px;
+  cursor: default;
+  white-space: nowrap; overflow: hidden;
+}
+/* numa coluna flex de altura fixa (as listas das telas), a linha não encolhe para caber: a lista rola */
+.linha { flex-shrink: 0; }
+.linha:hover { background: color-mix(in srgb, var(--texto) 5%, transparent); }
+.linha.marcada { background: color-mix(in srgb, var(--primaria) 22%, transparent); font-weight: 500; }
+.linha.marcada::before {
+  content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 2px; background: var(--destaque);
+}
+.linha .icone { width: 18px; display: flex; justify-content: center; color: var(--texto2); flex: none; }
+.linha.marcada .icone { color: var(--destaque); }
+.linha .rotulo { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.linha.sub { padding-left: 28px; font-size: 12.5px; }
+.bolinha { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.sino { width: 7px; height: 7px; border-radius: 50%; background: #e5484d; flex: none; }
+.selo {
+  font: 600 10.5px 'Roboto'; font-variant-numeric: tabular-nums;
+  color: #fff; background: var(--primaria); border-radius: 99px; padding: 1px 6px;
+}
+.setinha { background: none; border: 0; color: var(--texto2); padding: 0 2px; display: flex; transition: transform .2s; }
+.setinha.aberta { transform: rotate(90deg); }
+
+/* todas as telas ficam montadas (trocar de tela não reinicia o terminal); a escondida só não aparece */
+.telas { position: relative; overflow: hidden; }
+.tela { position: absolute; inset: 0; overflow: auto; }
+.tela.escondida { visibility: hidden; pointer-events: none; }
+.vazio { height: 100%; display: grid; place-content: center; text-align: center; gap: 8px; color: var(--texto2); }
+.vazio h2 { color: var(--texto); }
+
+/* ---------- terminal ---------- */
+.palco-terminal { position: absolute; inset: 0; background: #0a0e2d; padding: 6px 0 0 8px; }
+.palco-terminal .xt { position: absolute; inset: 6px 0 0 8px; }
+.palco-terminal .xt.escondida { visibility: hidden; }
+.encerrado {
+  position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 12px;
+  background: var(--superficie); color: var(--texto); border: 1px solid var(--borda); border-radius: 10px; padding: 10px 14px;
+}
+
+/* ---------- interações da Souv (souv.tsx) ---------- */
+.texto2 { color: var(--texto2); }
+.destaque { color: var(--destaque); }
+.perigo-texto { color: var(--perigo); }
+.pequeno-texto { font-size: 11.5px; }
+.mono { font-family: 'JFY Mono', Consolas, monospace; }
+.girando { animation: girar 0.9s linear infinite; color: var(--texto2); }
+@keyframes girar { to { transform: rotate(360deg); } }
+
+.botao {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  font: 500 13px 'Roboto'; border-radius: 8px; padding: 5px 12px; border: 1px solid var(--borda);
+  background: var(--superficie2); color: var(--texto); cursor: pointer;
+}
+.botao.secundario:hover:not(:disabled) { background: color-mix(in srgb, var(--primaria) 12%, var(--superficie2)); border-color: color-mix(in srgb, var(--destaque) 50%, transparent); }
+.botao.primario { background: var(--primaria); border-color: var(--primaria); color: #fff; }
+.botao.perigo { background: var(--perigo); border-color: var(--perigo); color: #fff; }
+.botao.primario:hover:not(:disabled), .botao.perigo:hover:not(:disabled) { filter: brightness(1.1); }
+.botao.link { background: none; border: 0; padding: 0; color: var(--destaque); font-weight: 400; }
+.botao.link:hover:not(:disabled) { text-decoration: underline; }
+.botao.icone { background: none; border: 0; padding: 2px; color: var(--texto2); }
+.botao.icone:hover:not(:disabled) { color: var(--destaque); }
+.botao.pequeno { padding: 2px 8px; font-size: 12px; }
+.botao:disabled { opacity: .45; cursor: default; }
+.botao:active:not(:disabled) { filter: brightness(.92); }
+
+.campo {
+  font: 13px 'Roboto'; width: 100%; padding: 6px 9px; border-radius: 8px; user-select: text;
+  border: 1px solid var(--borda); background: var(--superficie2); color: var(--texto); outline: none;
+}
+.campo:focus { border-color: var(--destaque); box-shadow: 0 0 0 .5px var(--destaque); }
+.campo.area { resize: vertical; min-height: 70px; line-height: 1.45; }
+.campo::placeholder { color: var(--texto2); opacity: .8; }
+
+.caixa { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.caixa .quadrado {
+  width: 15px; height: 15px; border-radius: 4px; border: 1px solid var(--borda); background: var(--superficie2);
+  display: grid; place-items: center; color: #fff; flex: none;
+}
+.caixa .quadrado.marcado { background: var(--primaria); border-color: var(--primaria); }
+
+.segmentos {
+  display: inline-flex; gap: 2px; padding: 2px; border-radius: 8px; background: var(--superficie2); border: 1px solid var(--borda);
+}
+.segmentos.cheio { display: flex; }
+.segmentos.cheio button { flex: 1; justify-content: center; }
+.segmentos button {
+  display: inline-flex; align-items: center; gap: 5px; border: 0; background: none; color: var(--texto2);
+  font: 13px 'Roboto'; padding: 3px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.segmentos button.marcado { background: var(--primaria); color: #fff; }
+
+.select {
+  display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%;
+  font: 13px 'Roboto'; color: var(--texto); padding: 5px 10px; border-radius: 8px;
+  background: var(--superficie2); border: 1px solid var(--borda); cursor: pointer; text-align: left;
+}
+.select .rotulo { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.select.aberto { border-color: var(--destaque); box-shadow: 0 0 0 .5px var(--destaque); }
+.select:disabled { opacity: .45; cursor: default; }
+
+.flutuante {
+  position: fixed; z-index: 70; padding: 6px; max-height: 420px; overflow: auto;
+  background: var(--superficie); border: 1px solid var(--borda); border-radius: 10px; box-shadow: 0 12px 34px rgba(0, 0, 0, .32);
+}
+.lista-menu { display: grid; gap: 1px; min-width: 200px; }
+.lista-menu.rolavel { max-height: 340px; overflow: auto; }
+.lista-menu button {
+  display: flex; align-items: center; gap: 8px; border: 0; background: none; text-align: left;
+  font: 13px 'Roboto'; color: var(--texto); padding: 6px 10px; border-radius: 6px; cursor: pointer; white-space: nowrap;
+}
+.lista-menu button .rotulo { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.lista-menu button:hover:not(:disabled) { background: color-mix(in srgb, var(--primaria) 14%, transparent); }
+.lista-menu button.perigo { color: var(--perigo); }
+.lista-menu button:disabled { opacity: .4; cursor: default; }
+.lista-menu hr { border: 0; border-top: 1px solid var(--borda); margin: 3px 0; }
+
+.bolinha { border-radius: 50%; flex: none; display: inline-block; }
+.foto-conta { border-radius: 50%; background: var(--superficie2); flex: none; object-fit: cover; }
+
+.aviso { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-radius: 8px; font-size: 12.5px; user-select: text; }
+.aviso span { flex: 1; }
+.aviso.erro { background: color-mix(in srgb, var(--perigo) 14%, transparent); color: var(--perigo); }
+.aviso.alerta { background: color-mix(in srgb, #f5a524 16%, transparent); color: #f5a524; }
+.aviso.ok { background: color-mix(in srgb, #2fbf71 16%, transparent); color: #2fbf71; }
+.aviso.info { background: color-mix(in srgb, var(--primaria) 14%, transparent); color: var(--texto); }
+
+.veu { position: fixed; inset: 0; background: rgba(0, 0, 0, .45); display: grid; place-items: center; z-index: 50; }
+.modal {
+  width: 440px; max-width: calc(100vw - 40px); max-height: calc(100vh - 40px); overflow: auto;
+  background: var(--fundo); border: 1px solid var(--borda); border-radius: 14px; padding: 22px;
+  display: grid; gap: 14px; box-shadow: 0 20px 60px rgba(0, 0, 0, .35);
+}
+.modal h3 { font-size: 20px; }
+.modal p, .modal .mensagem { margin: 0; color: var(--texto2); line-height: 1.45; }
+.modal .acoes { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+
+.calendario { width: 236px; padding: 6px; display: grid; gap: 8px; }
+.calendario .cabeca { display: flex; align-items: center; justify-content: space-between; }
+.calendario .grade { display: grid; grid-template-columns: repeat(7, 28px); gap: 3px; }
+.calendario .semana { font-size: 10.5px; font-weight: 600; color: var(--texto2); text-align: center; }
+.calendario .grade button {
+  height: 26px; border: 1px solid transparent; border-radius: 6px; background: none; color: var(--texto);
+  font: 13px 'Roboto'; font-variant-numeric: tabular-nums; cursor: pointer;
+}
+.calendario .grade button:hover:not(:disabled) { background: color-mix(in srgb, var(--primaria) 14%, transparent); }
+.calendario .grade button.hoje { border-color: var(--destaque); }
+.calendario .grade button.escolhido { background: var(--primaria); color: #fff; border-color: var(--primaria); }
+.calendario .grade button:disabled { opacity: .3; cursor: default; }
+.campo-data { display: inline-flex; align-items: center; gap: 6px; }
+
+.texto-rico { line-height: 1.55; user-select: text; overflow-wrap: anywhere; }
+.texto-rico img { max-width: 100%; border-radius: 6px; }
+.texto-rico a { color: var(--destaque); }
+.texto-rico pre, .texto-rico code { font-family: 'JFY Mono', Consolas, monospace; font-size: 12px; background: var(--superficie2); border-radius: 4px; }
+.texto-rico pre { padding: 8px; overflow: auto; }
+.texto-rico code { padding: 1px 4px; }
+.texto-rico table { border-collapse: collapse; }
+.texto-rico td, .texto-rico th { border: 1px solid var(--borda); padding: 4px 8px; }
+.texto-rico h1, .texto-rico h2, .texto-rico h3 { margin: 12px 0 6px; }
+.texto-rico p { margin: 0 0 8px; }
+
+/* ---------- layout das telas ---------- */
+.titulo-tela { font: 300 26px 'Lexend'; }
+.linha-h { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pilha { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.espaco { flex: 1; }
+.cabecalho { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--borda); flex-wrap: wrap; }
+.colunas { display: flex; height: 100%; min-height: 0; }
+.coluna { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--borda); background: var(--superficie); }
+.coluna:last-child { border-right: 0; }
+.painel { flex: 1; min-width: 0; min-height: 0; overflow: auto; display: flex; flex-direction: column; }
+.rolavel { overflow: auto; min-height: 0; }
+.lista { flex: 1; overflow: auto; padding: 6px; }
+.cartao { background: var(--superficie); border: 1px solid var(--borda); border-radius: 12px; padding: 14px; }
+.chip {
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 99px; font-size: 11.5px;
+  background: var(--superficie2); border: 1px solid var(--borda); color: var(--texto); white-space: nowrap;
+}
+.secao-titulo { font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--texto2); padding: 10px 8px 4px; }
+.selecionavel { user-select: text; }
+
+/* ---------- o uso da IA, no topo ---------- */
+.uso-ia { display: flex; gap: 16px; font-size: 11.5px; }
+.medidor { display: inline-flex; align-items: center; gap: 6px; }
+.medidor .trilho { width: 70px; height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--texto2) 22%, transparent); overflow: hidden; }
+.medidor .trilho span { display: block; height: 100%; border-radius: 3px; }
+.medidor strong { font-variant-numeric: tabular-nums; }
+
+/* ---------- campo de emails ---------- */
+.campo-emails { position: relative; display: grid; gap: 2px; }
+.campo-emails .rotulo-campo { min-width: 64px; flex: none; }
+.campo-emails .sugestoes {
+  margin-left: 72px; display: grid; background: var(--superficie); border: 1px solid var(--borda); border-radius: 6px; overflow: hidden;
+}
+.campo-emails .sugestoes button { align-items: center;
+  display: flex; gap: 8px; padding: 4px 8px; border: 0; background: none; color: var(--texto); font: 13px 'Roboto'; text-align: left; cursor: pointer;
+}
+.campo-emails .sugestoes button:hover { background: color-mix(in srgb, var(--primaria) 14%, transparent); }

@@ -1,0 +1,42 @@
+# Versão Windows: o autoteste do motor num Windows de verdade e o instalador do app (windows/dist/*.exe), que fica
+# nos artefatos da execução. Roda a cada push no branch da versão Windows, nas tags v* e quando chamado à mão.
+name: Windows
+
+on:
+  push:
+    branches: [feature/app-windows]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  motor:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14' # o mesmo do Python que vai dentro do instalador (windows/scripts/python.mjs)
+      - run: python jfy --selftest
+        env:
+          PYTHONUTF8: '1'
+
+  app:
+    runs-on: windows-latest
+    needs: motor
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: windows/package-lock.json
+      - run: npm ci
+      - run: npx tsc -p .
+      - run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jfy-windows
+          path: windows/dist/*.exe

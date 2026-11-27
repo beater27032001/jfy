@@ -7,6 +7,8 @@ final class CaixaEmail: ObservableObject {
     private struct Estado: Decodable { let ids: [String]? }
     static let arquivo = URL(fileURLWithPath: NSHomeDirectory() + "/.jfy/email.json")
     @Published private(set) var naoLidos = 0
+    @Published private(set) var chatNaoLidas = 0  // conversas do chat com mensagem não lida (o jfy guarda os ids)
+    static let chat = URL(fileURLWithPath: NSHomeDirectory() + "/.jfy/chat-nao-lidas.json")
     private var timer: Timer?
 
     init() {
@@ -17,6 +19,8 @@ final class CaixaEmail: ObservableObject {
     func ler() {
         let n = (try? JSONDecoder().decode(Estado.self, from: Data(contentsOf: Self.arquivo)))?.ids?.count ?? 0
         if n != naoLidos { naoLidos = n }
+        let c = (try? JSONDecoder().decode([String].self, from: Data(contentsOf: Self.chat)))?.count ?? 0
+        if c != chatNaoLidas { chatNaoLidas = c }
     }
 }
 
@@ -28,6 +32,7 @@ struct EmailsTela: View {
     @ObservedObject var nav: Navegacao
 
     struct Lista: Decodable {
+        let mudou, cache: Bool?  // cache: a lista guardada; mudou: a busca achou algo diferente da guardada
         struct Item: Decodable, Identifiable, Hashable {
             let id, de, assunto: String
             let ts: Double
@@ -46,6 +51,7 @@ struct EmailsTela: View {
     enum Grupo: String, CaseIterable { case data = "Data", remetente = "Remetente", nenhum = "Sem grupo" }
 
     struct Email: Decodable {
+        let mudou, cache: Bool?  // o mesmo da Lista, para o email aberto
         struct Anexo: Decodable, Identifiable {
             let nome, tipo, parte: String
             let tamanho: Int
@@ -337,6 +343,7 @@ struct EmailsTela: View {
                 AvisoAssinatura(url: lista?.url.map { $0.replacingOccurrences(of: "#inbox", with: "#settings/general") })
             }
         }
+        .task(id: e.id) { JFY.aquecerCorretor() }  // o Corrigir já acha o Claude do corretor aberto
     }
 
     private var vazia: Bool { resposta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -371,19 +378,36 @@ struct EmailsTela: View {
         }
     }
 
+    /// A lista guardada aparece na hora (o vigia do jfy a mantém em dia de 2 em 2 min); a busca roda por trás e só
+    /// troca a lista quando achou algo novo.
     private func carregar() async {
+        let c = caixaLista
+        let (g, msgG): (Lista?, String?) = await JFY.ler(["--emails-json", c.rawValue, "cache"])
+        guard c == caixaLista else { return }  // trocou de caixa no meio: vale a resposta da nova
+        if let g { lista = g }
+        guard g?.cache == true else { aviso = msgG; caixa.ler(); return }  // sem lista guardada, o jfy já buscou
         carregando = true
         defer { carregando = false }
-        let (l, msg): (Lista?, String?) = await JFY.ler(["--emails-json", caixaLista.rawValue])
-        if let l { lista = l }
+        let (l, msg): (Lista?, String?) = await JFY.ler(["--emails-json", c.rawValue])
+        guard c == caixaLista else { return }
+        if let l, l.mudou == true { lista = l }
         aviso = msg
         caixa.ler()  // o jfy acabou de guardar o total: o selo acompanha
     }
 
+    /// O email aberto da última vez aparece na hora; a leitura de verdade só troca quando mudou (resposta nova na
+    /// conversa, lido ou não lido).
     private func abrir() async {
         guard let id = selecao else { email = nil; return }
+        let (g, msgG): (Email?, String?) = await JFY.ler(["--email-json", id, "cache"])
+        guard selecao == id else { return }
+        email = g
+        if msgG != nil { aviso = msgG }
+        guard g?.cache == true else { return }
         let (e, msg): (Email?, String?) = await JFY.ler(["--email-json", id])
-        if selecao == id { email = e; if msg != nil { aviso = msg } }
+        guard selecao == id else { return }
+        if let e, e.mudou == true { email = e }
+        if msg != nil { aviso = msg }
     }
 
     private func agir(_ args: [String]) {
@@ -522,6 +546,7 @@ struct AnexoEmail: View {
 final class Contatos: ObservableObject {
     struct Contato: Decodable, Hashable {
         let email, nome: String
+        let foto: String?  // do diretório do Google (as pessoas da Souv); sem ela, as iniciais
     }
     static let todos = Contatos()
     @Published private(set) var lista: [Contato] = []
@@ -534,6 +559,45 @@ final class Contatos: ObservableObject {
             let (l, _): ([Contato]?, String?) = await JFY.ler(["--contatos-json"])
             lista = l ?? []
         }
+    }
+}
+
+/// A pessoa num círculo, como o Google Agenda: a foto do diretório do Google (as pessoas da Souv) ou, sem ela, as
+/// iniciais sobre uma cor que é sempre a mesma para o mesmo email. `cor`: a cor da pessoa no "Reunião com…" (um anel).
+struct AvatarPessoa: View {
+    let nome: String?
+    let email: String
+    let foto: String?
+    var cor: Color?
+    var tamanho: CGFloat = 18
+
+    private static let cores = ["#14b8a6", "#f97316", "#ec4899", "#a855f7", "#84cc16", "#eab308", "#06b6d4", "#f43f5e"]
+    private var iniciais: String {
+        let base = (nome?.isEmpty == false ? nome! : email.components(separatedBy: "@")[0])
+            .replacingOccurrences(of: ".", with: " ").replacingOccurrences(of: "_", with: " ")
+        return base.split(separator: " ").prefix(2).compactMap(\.first).map { String($0).uppercased() }.joined()
+    }
+    private var corFundo: Color {
+        Color(hex: Self.cores[Int(email.lowercased().unicodeScalars.reduce(0) { ($0 + Int($1.value)) % 997 }) % Self.cores.count])
+    }
+
+    var body: some View {
+        Group {
+            if let foto, let url = URL(string: foto) {
+                AsyncImage(url: url) { $0.resizable().scaledToFill() } placeholder: { letras }
+            } else {
+                letras
+            }
+        }
+        .frame(width: tamanho, height: tamanho)
+        .clipShape(Circle())
+        .overlay { if let cor { Circle().strokeBorder(cor, lineWidth: max(1.5, tamanho / 10)) } }
+        .help(nome.map { "\($0) · \(email)" } ?? email)
+    }
+
+    private var letras: some View {
+        Text(iniciais).font(.system(size: tamanho * 0.42, weight: .semibold)).foregroundStyle(.white)
+            .frame(width: tamanho, height: tamanho).background(corFundo)
     }
 }
 
@@ -599,7 +663,10 @@ struct NovoEmail: View {
                  + "O Claude só escreve aqui; nada sai sem você apertar Enviar. Gerar, corrigir e melhorar usam tokens.")
                 .font(.caption).foregroundStyle(Souv.texto2).fixedSize(horizontal: false, vertical: true)
         }
-        .task { let (a, _): (Assinatura?, String?) = await JFY.ler(["--email-assinatura"]); assinatura = a }
+        .task {
+            JFY.aquecerCorretor()  // o Corrigir já acha o Claude do corretor aberto
+            let (a, _): (Assinatura?, String?) = await JFY.ler(["--email-assinatura"]); assinatura = a
+        }
         .padding(20)
         .frame(width: 660)
         .background(Souv.fundo)
@@ -682,6 +749,7 @@ struct CampoEmails: View {
                     ForEach(sugestoes, id: \.email) { c in
                         Button { escolher(c) } label: {
                             HStack {
+                                AvatarPessoa(nome: c.nome, email: c.email, foto: c.foto, tamanho: 18)
                                 Text(c.nome.isEmpty ? c.email : c.nome).lineLimit(1)
                                 if !c.nome.isEmpty { Text(c.email).foregroundStyle(.secondary).lineLimit(1) }
                                 Spacer()

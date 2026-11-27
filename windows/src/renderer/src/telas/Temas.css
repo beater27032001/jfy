@@ -1,0 +1,16 @@
+.te-tela { display: flex; flex-direction: column; gap: 16px; padding: 24px; }
+.te-grade { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 14px; }
+.te-cartao {
+  display: flex; flex-direction: column; gap: 10px; padding: 14px; text-align: left; cursor: pointer;
+  font: 13px 'Roboto'; color: var(--texto);
+  background: var(--superficie); border: 1px solid color-mix(in srgb, var(--texto2) 15%, transparent); border-radius: 12px;
+}
+.te-cartao.atual { border: 2px solid var(--primaria); padding: 13px; }
+.te-cartao:hover:not(.atual) { border-color: color-mix(in srgb, var(--destaque) 50%, transparent); }
+.te-em-uso { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--primaria); }
+.te-cores { display: flex; gap: 4px; }
+.te-cores span { flex: 1; height: 18px; border-radius: 3px; }
+.te-projetos { display: flex; gap: 3px; }
+.te-projetos span { width: 10px; height: 10px; border-radius: 50%; }
+.te-icones { display: flex; align-items: center; gap: 10px; height: 24px; }
+.te-icones img { image-rendering: pixelated; } /* pixel art: sem suavizar */

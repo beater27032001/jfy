@@ -1,0 +1,50 @@
+/* Login e primeiros passos: a tela inteira, por cima do app (que fica montado e inerte por baixo dos passos). */
+:root { --lg-verde: #2fbf71; --lg-laranja: #f5a524; --lg-ceu: #eef0f7; --lg-chao: #ffffff; }
+@media (prefers-color-scheme: dark) { :root { --lg-ceu: #0a0e2d; --lg-chao: #12183a; } }
+
+.lg-app { height: 100%; }
+.lg-centro { height: 100%; display: grid; place-items: center; background: var(--fundo); }
+
+/* ---------- login ---------- */
+.lg-fundo { height: 100%; display: grid; place-items: center; overflow: auto; background: linear-gradient(var(--lg-ceu), var(--lg-chao)); }
+.lg-miolo { display: flex; flex-direction: column; align-items: center; gap: 28px; padding: 40px; }
+.lg-simbolo { display: inline-block; width: 104px; height: 104px; flex: none; background: var(--destaque); mask: var(--svg) center / contain no-repeat; }
+.lg-nome { width: 148px; height: 40px; background: var(--texto); mask: var(--svg) center / contain no-repeat; }
+.lg-divisor { width: 2px; height: 40px; background: var(--borda); }
+.lg-jfy { font: 500 44px 'Lexend'; letter-spacing: 6px; }
+.lg-lema { font-size: 24px; color: var(--texto2); }
+.lg-coluna { width: 380px; gap: 14px; align-items: stretch; text-align: center; }
+.lg-coluna .cartao { text-align: left; }
+.lg-google {
+  display: flex; align-items: center; justify-content: center; gap: 10px; padding: 12px; border-radius: 12px; cursor: pointer;
+  font: 500 16px 'Roboto'; color: #1f1f24; background: #fff; border: 1px solid rgba(0, 0, 0, .12); box-shadow: 0 4px 10px rgba(0, 0, 0, .18);
+}
+.lg-google:disabled { opacity: .6; cursor: default; }
+.lg-google:hover:not(:disabled) { filter: brightness(.97); }
+.lg-g { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: #1f1f24; color: #fff; font: 700 13px 'Roboto'; }
+.lg-legenda { font-size: 11.5px; }
+.lg-alerta { display: flex; gap: 6px; align-items: center; justify-content: center; color: var(--lg-laranja); }
+.lg-laranja { color: var(--lg-laranja); }
+.lg-verde { color: var(--lg-verde); }
+
+/* ---------- primeiros passos ---------- */
+.lg-passos { position: fixed; inset: 0; z-index: 40; display: flex; background: var(--fundo); }
+.lg-trilha { width: 260px; flex: none; padding: 28px; background: var(--superficie); border-right: 1px solid var(--borda); }
+.lg-etapa { gap: 12px; padding: 9px 0; }
+.lg-numero {
+  width: 26px; height: 26px; border-radius: 50%; flex: none; display: grid; place-items: center;
+  font-size: 11.5px; font-weight: 700; background: var(--superficie2); color: var(--texto2);
+}
+.lg-numero.atual { background: var(--primaria); color: #fff; }
+.lg-numero.feito { background: var(--lg-verde); color: #fff; }
+.lg-opcional { font-size: 10.5px; }
+.lg-passo { flex: 1; max-width: 720px; padding: 36px; display: flex; flex-direction: column; gap: 18px; overflow: auto; }
+.lg-explicacao { margin: 0; font-size: 15px; line-height: 1.45; color: var(--texto2); }
+.lg-ok { color: var(--lg-verde); font-size: 15px; }
+.lg-projeto { padding: 10px; border-radius: 10px; background: var(--superficie); gap: 10px; }
+.lg-uma { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.lg-barra-comando {
+  position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 40; max-width: calc(100vw - 40px);
+  display: flex; align-items: center; gap: 14px; padding: 10px 14px; border-radius: 10px;
+  background: var(--superficie); border: 1px solid var(--borda); box-shadow: 0 12px 34px rgba(0, 0, 0, .32);
+}

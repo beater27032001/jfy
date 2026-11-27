@@ -1,0 +1,92 @@
+/* Tela GitHub (Github.tsx): as colunas encolhem com a janela, como no app do Mac. */
+.gh { display: flex; flex-direction: column; height: 100%; }
+.gh-corpo { flex: 1; height: auto; }
+.gh-aviso { padding: 8px 16px 0; }
+.gh-pad { padding: 10px; }
+.gh-nada { flex: 1; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; padding: 20px; }
+.gh-sem-conta h2 { font-size: 19px; font-weight: 400; color: var(--texto); }
+
+.gh .coluna { overflow: auto; }
+.gh-col-repos { width: clamp(190px, 22%, 250px); flex: none; padding: 6px; }
+.gh-col-prs { width: clamp(260px, 32%, 380px); flex: none; padding: 0 6px 6px; }
+.gh-col-lista { width: clamp(240px, 32%, 340px); flex: none; padding: 6px; }
+.gh .gh-col-commit { width: clamp(260px, 30%, 330px); flex: none; overflow: hidden; }
+
+/* linhas de duas ou três linhas de texto */
+.gh .linha.gh-linha { white-space: normal; align-items: flex-start; padding-top: 6px; padding-bottom: 6px; }
+.gh-pilha { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.gh-encolhe { flex: 0 1 auto; }
+.gh-junto { gap: 5px; }
+.gh-base { align-items: baseline; }
+.gh-legenda { font-size: 11.5px; color: var(--texto2); }
+.gh-miudo { font-size: 10.5px; }
+.gh-medio { font-weight: 500; }
+.gh-cortar { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.gh-duas { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; min-width: 0; }
+.gh-fixo { flex: none; white-space: nowrap; }
+.gh-cresce { flex: 1; }
+.gh-capsula {
+  font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 99px; flex: none;
+  background: color-mix(in srgb, var(--primaria) 20%, transparent);
+}
+.gh-rotulo { font-size: 11px; font-weight: 600; letter-spacing: .6px; text-transform: uppercase; color: var(--texto2); }
+
+/* um repositório */
+.gh-repo { overflow: hidden; }
+.gh-repo-topo { gap: 10px; padding: 10px 14px; flex-wrap: wrap; }
+.gh-divisor { width: 1px; height: 28px; background: var(--borda); flex: none; }
+.gh-dividido { display: inline-flex; }
+.gh-dividido > .botao:first-child { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+.gh-dividido > .botao:last-child { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left: 0; padding: 5px 7px; }
+.gh-aviso-repo { padding: 0 14px 8px; }
+.gh-abas { padding: 0 14px 10px; border-bottom: 1px solid var(--borda); }
+.gh-conteudo { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.gh-conteudo > .colunas { flex: 1; height: auto; }
+
+/* histórico */
+.gh-mensagem { padding: 12px; white-space: pre-wrap; line-height: 1.45; }
+.gh-arquivos { display: grid; gap: 3px; padding: 0 12px 10px; }
+
+/* o diff: rola nos dois sentidos e começa no topo à esquerda; o fundo da linha vai até a borda */
+.gh-diff { flex: 1; min-height: 120px; overflow: auto; background: var(--superficie); border-top: 1px solid var(--borda); font-size: 11.5px; line-height: 1.5; }
+.gh-diff-dentro { width: max-content; min-width: 100%; padding: 8px; }
+.gh-diff-dentro > div { white-space: pre; }
+.gh-mais { color: #2fbf71; background: color-mix(in srgb, #2fbf71 8%, transparent); }
+.gh-menos { color: #e5484d; background: color-mix(in srgb, #e5484d 8%, transparent); }
+.gh-trecho { color: #3b82f6; }
+
+/* commit */
+.gh-cabeca-arquivos { padding: 8px 10px; border-bottom: 1px solid var(--borda); }
+.gh-caixa-commit { display: grid; gap: 8px; padding: 10px; border-top: 1px solid var(--borda); }
+.gh-descricao.campo.area { height: 64px; min-height: 64px; resize: none; }
+.gh-largo { width: 100%; justify-content: center; }
+.gh-grande { padding: 8px 12px; }
+.gh-cabeca-diff { padding: 8px 12px; }
+.gh-arquivo { gap: 6px; min-width: 0; flex: 1; }
+.gh-estado {
+  width: 16px; height: 16px; border-radius: 4px; flex: none; display: grid; place-items: center;
+  color: #fff; font-size: 11px; font-weight: 700;
+}
+/* a pasta cortada no começo: o fim do caminho é o que importa */
+.gh-pasta-arq { direction: rtl; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+
+/* branches e worktrees */
+.gh-branches { display: grid; gap: 18px; padding: 16px; max-width: 900px; }
+.gh-branches .campo { flex: 1; }
+.gh-apertada { gap: 6px; }
+.gh-item { padding: 2px 0; }
+
+/* um PR */
+.gh-pr { display: grid; gap: 16px; padding: 24px; max-width: 900px; align-content: start; }
+.gh-titulo-pr { font: 600 20px 'Roboto', sans-serif; }
+.gh-task {
+  border: 0; background: none; padding: 0; color: var(--texto); font: inherit; text-align: left; cursor: pointer; min-width: 0;
+}
+.gh-task:hover .gh-cortar { text-decoration: underline; }
+.gh-vazada { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid #8e8e93; flex: none; }
+.gh-nota { gap: 3px; }
+.gh-comentar { align-items: flex-end; }
+.gh-comentar .campo.area { field-sizing: content; min-height: 32px; max-height: 120px; resize: none; }
+
+/* o título do PR quebra em até duas linhas (a .linha da base não quebra) */
+.gh-linha { white-space: normal; }

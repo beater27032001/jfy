@@ -12,7 +12,7 @@ struct ConfiguracoesTela: View {
         struct Google: Decodable {
             let conectado, cliente: Bool
             let conta, erro: String?
-            let drive: Bool?
+            let drive, fotos: Bool?
         }
         struct Github: Decodable {
             let ativa: String?
@@ -142,10 +142,13 @@ struct ConfiguracoesTela: View {
         cartao("Google", "envelope", "Agenda, Gmail e leitura do Drive") {
             if g.conectado {
                 estado(g.erro == nil, g.conta.map { "Conectado como \($0)" } ?? "Conectado")
-                if g.drive == false {
-                    Text("O login ainda não tem o Drive: a cesta de contexto manda Docs e Planilhas só como link. Entre de novo para ligar.")
+                // permissão que o login antigo não tem: o Drive (a cesta de contexto) e o diretório (as fotos das pessoas)
+                let faltam = [g.drive == false ? "o Drive (a cesta de contexto manda Docs e Planilhas só como link)" : nil,
+                              g.fotos == false ? "as fotos das pessoas (a Agenda e as sugestões de email mostram só as iniciais)" : nil].compactMap { $0 }
+                if !faltam.isEmpty {
+                    Text("O login ainda não tem " + faltam.joined(separator: " nem ") + ". Entre de novo para ligar.")
                         .font(.callout).foregroundStyle(.orange)
-                    Button("Entrar de novo (com o Drive)") { entrarGoogle(trocando: false) }.disabled(ocupado == "google")
+                    Button("Entrar de novo") { entrarGoogle(trocando: false) }.disabled(ocupado == "google")
                 }
                 if let e = g.erro { Text(e).font(.caption).foregroundStyle(.orange).textSelection(.enabled) }
             } else {

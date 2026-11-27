@@ -577,10 +577,12 @@ private struct BotaoDialogo: PrimitiveButtonStyle {
 }
 
 /// O calendário da Souv: o mês com a semana começando no domingo, o dia escolhido em Vivid Blue e hoje com o anel de
-/// destaque. Mantém a hora da data. `ate` bloqueia os dias depois dele (as horas não vão para o futuro).
+/// destaque. Mantém a hora da data. `ate` bloqueia os dias depois dele (as horas não vão para o futuro); `desde`, os de
+/// antes (a mensagem programada não vai para o passado).
 struct CalendarioSouv: View {
     @Binding var data: Date
     var ate: Date?
+    var desde: Date?
     var escolheu: (() -> Void)?
     @State private var mes: Date?
 
@@ -598,12 +600,12 @@ struct CalendarioSouv: View {
         let primeiro = mostrado
         let vazios = (cal.component(.weekday, from: primeiro) - cal.firstWeekday + 7) % 7
         let dias = cal.range(of: .day, in: .month, for: primeiro)?.count ?? 30
-        let limite = ate.map { cal.startOfDay(for: $0) }
+        let limite = ate.map { cal.startOfDay(for: $0) }, inicio = desde.map { cal.startOfDay(for: $0) }
         let proximo = cal.date(byAdding: .month, value: 1, to: primeiro) ?? primeiro
         VStack(spacing: 8) {
             HStack {
                 Button { mes = cal.date(byAdding: .month, value: -1, to: primeiro) } label: { Image(systemName: "chevron.left") }
-                    .buttonStyle(.souvIcone)
+                    .buttonStyle(.souvIcone).disabled(inicio.map { primeiro <= $0 } ?? false)
                 Spacer()
                 let titulo = primeiro.formatted(.dateTime.month(.wide).year().locale(Locale(identifier: "pt_BR")))
                 Text(titulo.prefix(1).uppercased() + titulo.dropFirst())
@@ -621,7 +623,7 @@ struct CalendarioSouv: View {
                     if i < vazios {
                         Color.clear.frame(height: 26)
                     } else if let d = cal.date(byAdding: .day, value: i - vazios, to: primeiro) {
-                        celula(d, bloqueado: limite.map { d > $0 } ?? false)
+                        celula(d, bloqueado: (limite.map { d > $0 } ?? false) || (inicio.map { d < $0 } ?? false))
                     }
                 }
             }
@@ -654,6 +656,7 @@ struct CalendarioSouv: View {
 struct CampoDataSouv: View {
     @Binding var data: Date
     var ate: Date?
+    var desde: Date?
     var comHora = false
     @State private var aberto = false
 
@@ -663,7 +666,7 @@ struct CampoDataSouv: View {
                 Label(data.formatted(.dateTime.day().month(.abbreviated).year().locale(Locale(identifier: "pt_BR"))), systemImage: "calendar")
             }
             .popover(isPresented: $aberto, arrowEdge: .bottom) {
-                CalendarioSouv(data: $data, ate: ate) { aberto = false }.background(Souv.superficie).identidadeSouv()
+                CalendarioSouv(data: $data, ate: ate, desde: desde) { aberto = false }.background(Souv.superficie).identidadeSouv()
             }
             if comHora {
                 let c = Calendar.current.dateComponents([.hour, .minute], from: data)
@@ -683,4 +686,33 @@ struct CampoDataSouv: View {
         let c = Calendar.current.dateComponents([.hour, .minute], from: data)
         data = Calendar.current.date(bySettingHour: h ?? c.hour ?? 0, minute: m ?? c.minute ?? 0, second: 0, of: data) ?? data
     }
+}
+
+
+/// Dica que aparece na hora, em cima do botão de ícone. A do sistema (.help) demora 1 a 2 s e não aparece com o botão
+/// desativado: no ícone sozinho, parecia não existir. `alinhamento`: .topTrailing no último botão da linha (não sai da janela).
+struct DicaSouv: ViewModifier {
+    let texto: String
+    var alinhamento: Alignment = .top
+    @State private var aberta = false
+
+    func body(content: Content) -> some View {
+        content
+            .onHover { aberta = $0 }
+            .overlay(alignment: alinhamento) {
+                if aberta {
+                    Text(texto).font(.caption).foregroundStyle(Souv.texto).fixedSize()
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(Souv.superficie, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Souv.borda))
+                        .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                        .offset(y: -32)
+                        .allowsHitTesting(false)
+                }
+            }
+    }
+}
+
+extension View {
+    func dicaSouv(_ texto: String, alinhamento: Alignment = .top) -> some View { modifier(DicaSouv(texto: texto, alinhamento: alinhamento)) }
 }

@@ -28,7 +28,8 @@ enum JFY {
                     return cont.resume(returning: (-1, "", "Não consegui rodar \(script): \(error.localizedDescription)"))
                 }
                 if let entrada {
-                    inn.fileHandleForWriting.write(Data((entrada + "\n").utf8))
+                    // sem "\n" no fim: o --corrigir descarta a correção que muda as quebras de linha do texto
+                    inn.fileHandleForWriting.write(Data(entrada.utf8))
                     try? inn.fileHandleForWriting.close()
                 }
                 // ponytail: lê a saída toda antes do erro; o stderr do jfy é curto, então o pipe não enche
@@ -64,6 +65,15 @@ extension JFY {
         let msg = r.erro.trimmingCharacters(in: .whitespacesAndNewlines)
         return r.status == 0 ? nil : msg.isEmpty ? "jfy \(args[0]) falhou (código \(r.status))" : msg
     }
+
+    /// Abre o Claude do corretor antes da primeira correção (o chat e os emails chamam quando a pessoa vai escrever),
+    /// sem esperar. No máximo 1 vez a cada 5 min: o corretor fica de pé 10 min depois do último uso.
+    @MainActor static func aquecerCorretor() {
+        guard Date().timeIntervalSince(aquecidoEm) > 300 else { return }
+        aquecidoEm = Date()
+        Task { _ = await rodar(["--corretor-aquecer"]) }
+    }
+    @MainActor private static var aquecidoEm = Date.distantPast
 }
 
 /// "AAAA-MM-DD" do dia local, e de volta. O .iso8601 do Swift usa UTC: no Brasil, "25/11" virava 24/11 às 21h
@@ -154,9 +164,10 @@ final class Navegacao: ObservableObject {
     @Published var abrirProjeto: String?
     @Published var abrirEmail: String?
     @Published var abrirEvento: String?
+    @Published var abrirConversa: String?  // conversa do chat (o clique na notificação de mensagem nova)
     @Published var abrirAba: String?  // janela do tmux do jfy (o clique na notificação do Claude)
 
-    /// jfy://<destino>, o clique nas notificações do jfy: email/<id>, pr/<dono>/<repo>#<n>, evento/<id>,
+    /// jfy://<destino>, o clique nas notificações do jfy: email/<id>, pr/<dono>/<repo>#<n>, evento/<id>, chat/<conversa>,
     /// aba/<janela do tmux>, horas, agenda, emails, github, notificacoes.
     func abrir(_ url: URL) {
         guard url.scheme == "jfy", let destino = url.host else { return }
@@ -165,6 +176,7 @@ final class Navegacao: ObservableObject {
         case "email": abrirEmail = resto; tela = .emails
         case "pr": abrirPR = resto; tela = .github
         case "evento": abrirEvento = resto; tela = .reunioes
+        case "chat": abrirConversa = resto; tela = .chat
         case "aba": abrirAba = resto; tela = .terminal
         case "horas": tela = .horas
         case "agenda": tela = .reunioes
@@ -254,7 +266,7 @@ struct Principal: View {
                         .foregroundStyle(marcada ? Souv.destaque : Souv.texto2)
                         Text(t.rawValue).foregroundStyle(Souv.texto).fontWeight(marcada ? .medium : .regular).lineLimit(1)
                         Spacer(minLength: 0)
-                        selo(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .portas ? portas.itens.count
+                        selo(t == .notificacoes ? notificacoes.novas : t == .emails ? caixa.naoLidos : t == .chat ? caixa.chatNaoLidas : t == .portas ? portas.itens.count
                              : t == .contexto ? cesta.itens.count : 0)
                         if t == .terminal, !abas.itens.isEmpty {
                             Spacer(minLength: 0)
@@ -294,12 +306,12 @@ struct Principal: View {
                 mostrar(.projetos) { ProjetosTela(ativa: tela == .projetos, nav: nav, irParaJFY: irParaJFY) }
                 mostrar(.contexto) { ContextoTela(ativa: tela == .contexto, irParaJFY: irParaJFY, abas: abas) }
                 mostrar(.github) { GithubTela(ativa: tela == .github, nav: nav, irParaJFY: irParaJFY) }
-                mostrar(.horas) { HorasTela(ativa: tela == .horas, irParaJFY: irParaJFY) }
+                mostrar(.horas) { HorasTela(ativa: tela == .horas) }
                 mostrar(.reunioes) { ReunioesTela(ativa: tela == .reunioes, nav: nav, irParaJFY: irParaJFY) }
                 mostrar(.emails) { EmailsTela(caixa: caixa, ativa: tela == .emails, nav: nav) }
                 mostrar(.portas) { PortasTela(portas: portas, ativa: tela == .portas) }
                 mostrar(.uso) { UsoTela() }
-                mostrar(.chat) { ChatTela(ativa: tela == .chat) }
+                mostrar(.chat) { ChatTela(ativa: tela == .chat, nav: nav) }
                 mostrar(.notificacoes) {
                     NotificacoesTela(notificacoes: notificacoes, ativa: tela == .notificacoes, irParaJFY: irParaJFY)
                 }

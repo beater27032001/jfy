@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 /// Gestão das tasks: projetos, as tasks em seções (a mesma ordem da tela do projeto no jfy) e a task inteira, com
-/// status, prioridade e prazo por clique, anexos e comentários. Quem fala com o Journify é o jfy
-/// (--projetos-json, --tasks-json, --task-json, --task-mudar, --task-abrir).
+/// status, prioridade e prazo por clique, anexos (ver e anexar) e comentários. Quem fala com o Journify é o jfy
+/// (--projetos-json, --tasks-json, --task-json, --task-mudar, --task-abrir, --arquivo-enviar).
 struct ProjetosTela: View {
     let ativa: Bool
     @ObservedObject var nav: Navegacao
@@ -446,6 +446,7 @@ struct TaskDetalhe: View {
     @State private var comentario = ""
     @State private var fechandoEm: String?  // status que pede o vídeo do teste
     @State private var video = ""
+    @State private var anexando: String?  // o arquivo que está indo para a task agora
 
     var body: some View {
         Group {
@@ -508,7 +509,18 @@ struct TaskDetalhe: View {
                         Markdown(texto: d.descricao)
                     }
                 }
-                if !d.anexos.isEmpty { Secao("Anexos (\(d.anexos.count))") { anexos(d.anexos) } }
+                Secao(d.anexos.isEmpty ? "Anexos" : "Anexos (\(d.anexos.count))") {
+                    if !d.anexos.isEmpty { anexos(d.anexos) }
+                    HStack(spacing: 8) {
+                        Button { anexar() } label: { Label("Anexar arquivo", systemImage: "paperclip") }
+                            .disabled(anexando != nil)
+                            .help("Um print ou o vídeo do teste: vai para a task no Journify (até 20 MB; vídeo, até 100 MB)")
+                        if let anexando {
+                            ProgressView().controlSize(.small)
+                            Text(anexando).font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
+                    }
+                }
                 let links = linksCitados(d)
                 if !links.isEmpty {
                     Secao("Links (\(links.count))") {
@@ -651,6 +663,15 @@ struct TaskDetalhe: View {
             ocupado = false
             aviso = erro
             if erro == nil, campo != "comentario" { mudou() }
+        }
+    }
+
+    private func anexar() {
+        Task {
+            let r = await enviarArquivos(para: "task", tid) { anexando = $0 }
+            if r.enviados > 0 { await carregar() }
+            anexando = nil
+            if let e = r.erro { aviso = e }  // depois do carregar, que troca o aviso
         }
     }
 

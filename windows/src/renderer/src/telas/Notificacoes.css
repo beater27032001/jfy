@@ -1,0 +1,16 @@
+/* Tela Notificações: o histórico por dia, as novas em destaque. */
+.nt { height: 100%; display: flex; flex-direction: column; gap: 16px; padding: 24px; }
+.nt-topo { align-items: flex-start; }
+.nt-cabeca { gap: 4px; }
+.nt-titulo { font-size: 30px; }
+.nt-lista { flex: 1; min-height: 0; overflow: auto; }
+.nt-dia { font-size: 12px; font-weight: 600; color: var(--texto2); padding: 12px 8px 4px; }
+.nt-linha { display: flex; align-items: flex-start; gap: 12px; padding: 8px; border-radius: 8px; }
+.nt-linha.acao { cursor: pointer; }
+.nt-linha.acao:hover { background: color-mix(in srgb, var(--texto) 5%, transparent); }
+.nt-icone { width: 20px; flex: none; color: var(--texto2); margin-top: 1px; }
+.nt-linha.nova .nt-icone { color: var(--primaria); }
+.nt-textos { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.nt-linha.nova .nt-tit { font-weight: 600; }
+.nt-texto { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-line; }
+.nt-ponto { width: 8px; height: 8px; border-radius: 50%; background: var(--primaria); flex: none; margin-top: 4px; }

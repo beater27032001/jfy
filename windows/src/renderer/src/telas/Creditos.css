@@ -1,0 +1,43 @@
+.cr-casca { position: absolute; inset: 0; }
+.cr-tela { height: 100%; overflow: auto; display: flex; flex-direction: column; align-items: center; gap: 36px; padding: 40px; }
+.cr-musica { position: absolute; top: 16px; right: 16px; z-index: 1; }
+.cr-topo { display: flex; align-items: center; justify-content: center; gap: 44px; flex-wrap: wrap; }
+
+/* a foto como uma polaroide: moldura branca, legenda embaixo, levemente torta */
+.cr-polaroide {
+  margin: 0; padding: 14px 14px 8px; display: flex; flex-direction: column; align-items: center; gap: 10px;
+  background: #fafafa; border-radius: 3px; box-shadow: 0 8px 28px rgba(0, 0, 0, .35); transform: rotate(-3deg);
+}
+.cr-polaroide img { width: 340px; height: 255px; object-fit: cover; display: block; background: var(--superficie2); }
+.cr-polaroide figcaption { font-size: 13px; color: #333; padding-bottom: 6px; }
+
+.cr-texto { max-width: 460px; display: flex; flex-direction: column; gap: 16px; font-size: 15px; line-height: 1.5; user-select: text; }
+.cr-texto h1 { font-size: 34px; }
+.cr-texto p { margin: 0; }
+.cr-texto strong { font-weight: 700; }
+
+.cr-pessoas { display: flex; gap: 16px; width: 100%; max-width: 620px; }
+.cr-pessoas span {
+  flex: 1; text-align: center; padding: 22px 8px; font: 300 22px 'Lexend'; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  background: var(--superficie); border: 1px solid var(--borda); border-radius: 12px;
+}
+
+.cr-fim { display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 12px 0 40px; }
+.cr-simbolo { width: 44px; height: 44px; background: var(--destaque); mask: var(--svg) center / contain no-repeat; }
+.cr-fim h2 { font-size: 64px; letter-spacing: 6px; color: var(--destaque); text-align: center; }
+
+/* ---------- o mural: quem melhorou o jfy depois ---------- */
+.cr-mural { width: 100%; max-width: 900px; display: grid; gap: 6px; text-align: center; }
+.cr-mural h2 { font: 300 26px 'Lexend'; }
+.cr-grade { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; margin-top: 12px; text-align: center; }
+.cr-cartao {
+  display: grid; justify-items: center; align-content: start; gap: 6px; padding: 18px 14px;
+  background: var(--superficie); border: 1px solid var(--borda); border-radius: 12px;
+}
+.cr-cartao img, .cr-iniciais { width: 72px; height: 72px; border-radius: 50%; object-fit: cover; }
+.cr-iniciais { display: grid; place-items: center; background: var(--superficie2); color: var(--destaque); font: 400 24px 'Lexend'; }
+.cr-cartao strong { font: 400 17px 'Lexend'; }
+.cr-cartao span { line-height: 1.4; }
+.cr-convite { border-style: dashed; grid-column: 1 / -1; justify-items: start; text-align: left; }
+.cr-convite code { font-family: 'JFY Mono', Consolas, monospace; font-size: 12px; }
+.cr-exemplo { white-space: pre; background: var(--superficie2); border-radius: 6px; padding: 8px 10px; user-select: text; }

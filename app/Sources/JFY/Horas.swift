@@ -1,10 +1,10 @@
 import SwiftUI
 
 /// As horas do dia para o minhas-horas, a mesma tabela do `h` do jfy: o que foi medido (tasks, terminal livre,
-/// reuniões), com os seus ajustes. Quem lê e grava é o jfy (`--horas-json`, `--horas-ajuste`, `--horas-lancar`).
+/// reuniões), com os seus ajustes, e o que você registra à mão. Quem lê e grava é o jfy (`--horas-json`,
+/// `--horas-ajuste`, `--horas-nova`, `--horas-lancar`, este direto pelo MCP do Journify).
 struct HorasTela: View {
     let ativa: Bool
-    let irParaJFY: () -> Void
 
     struct Horas: Decodable {
         struct Item: Decodable, Identifiable {
@@ -14,12 +14,13 @@ struct HorasTela: View {
             let med, lanc, trabalhado: Int
             let fixo: Int?
             let fora, reuniao, palpite: Bool
-            let estado: String?  // depois do lançamento: "lancada", "mudou" ou "nova"
+            let estado: String?  // com o dia no Journify: "lancada", "mudou" ou "nova"
             var id: String { kid }
         }
+        /// O dia como está no Journify (lido de lá): quantos lançamentos, quantas horas e quantos não são de linha nenhuma.
         struct Lancado: Decodable {
-            let em: Double?  // nil: lançado antes de o jfy guardar a foto (não se sabe o quê, só que o dia tem horas lá)
-            let removidas: Int
+            let lancamentos, removidas: Int
+            let horas: Double
         }
         struct Projeto: Decodable, Identifiable {
             let id, nome: String
@@ -33,10 +34,18 @@ struct HorasTela: View {
         let lancado: Lancado?
     }
 
-    /// Projeto ou categoria fora da lista: o nome é digitado num alerta.
+    /// Projeto ou categoria fora da lista: o nome é digitado num alerta. Sem item: é a linha nova.
     private struct PedidoOutro {
-        let item: Horas.Item
+        let item: Horas.Item?
         let campo: String
+    }
+
+    /// O registro à mão: projeto, categoria, horas e descrição, como as linhas que o jfy mede sozinho.
+    private struct Nova {
+        var p = "", cat = "", min = "", desc = ""
+        var valida: Bool {
+            !p.isEmpty && !cat.isEmpty && !min.trimmingCharacters(in: .whitespaces).isEmpty && !desc.trimmingCharacters(in: .whitespaces).isEmpty
+        }
     }
 
     @State private var dia = Calendar.current.startOfDay(for: Date())
@@ -51,6 +60,10 @@ struct HorasTela: View {
     @State private var outro: PedidoOutro?
     @State private var textoOutro = ""
     @State private var confirmar = false
+    @State private var nova: Nova?
+    @State private var gravandoNova = false
+    @State private var lancando = false
+    @State private var lancou: (feito: String, sobrou: String?)?  // o que o último lançamento fez
 
     private var hoje: Date { Calendar.current.startOfDay(for: Date()) }
     /// O dia local (AAAA-MM-DD). O .iso8601 do Swift formata em UTC: num fuso adiantado sairia o dia anterior.
@@ -63,12 +76,14 @@ struct HorasTela: View {
         }
         .padding(24)
         .task(id: "\(ativa)|\(iso)") { if ativa { await carregar() } }
-        .onChange(of: iso) { levou = nil }
+        .onChange(of: iso) { levou = nil; nova = nil; lancou = nil }
         .onChange(of: focado) { antigo, _ in if let antigo { salvar(antigo) } }  // saiu do campo: salva o que ficou
         .dialogoSouv(outro?.campo == "p" ? "Projeto no Journify" : "Categoria", isPresented: Binding(
             get: { outro != nil }, set: { if !$0 { outro = nil } })) {
             Button("OK") {
-                if let o = outro, !textoOutro.isEmpty { ajustar(o.item, o.campo, textoOutro) }
+                if let o = outro, !textoOutro.isEmpty {
+                    if let it = o.item { ajustar(it, o.campo, textoOutro) } else if o.campo == "p" { nova?.p = textoOutro } else { nova?.cat = textoOutro }
+                }
                 outro = nil
             }
         } message: {
@@ -76,14 +91,12 @@ struct HorasTela: View {
         }
         .dialogoSouv(horas?.lancado == nil
                             ? "Lançar \(fmt(horas?.total ?? 0)) de \(dia.formatted(.dateTime.day().month(.twoDigits))) no Journify?"
-                            : "Este dia já foi lançado. Lançar de novo?", isPresented: $confirmar) {
-            Button(horas?.lancado == nil ? "Lançar" : "Editar as horas já registradas") { lancar() }
+                            : "Este dia já tem lançamentos no Journify. Lançar de novo?", isPresented: $confirmar) {
+            Button(horas?.lancado == nil ? "Lançar" : "Lançar de novo") { lancar() }
         } message: {
-            if let l = horas?.lancado {
-                Text("Foi lançado\(quando(l.em)). Essa ação vai editar as horas já registradas no Journify para ficarem iguais à tabela (e criar só as linhas novas), sem duplicar. Esse passo usa tokens.")
-            } else {
-                Text("O Claude abre numa aba do jfy e preenche o minhas-horas pelo Chrome, um lançamento por linha. Esse passo usa tokens.")
-            }
+            Text(horas?.lancado == nil
+                 ? "Vai direto para o Journify, em segundos: cada linha vira um lançamento no Minhas Horas, ligado à task quando você escolheu isso ao encerrar a task."
+                 : "O que já está lá e mudou é editado, e só as linhas novas são criadas, sem duplicar.")
         }
     }
 
@@ -121,13 +134,25 @@ struct HorasTela: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
             Spacer()
-            Button(h.lancado == nil ? "Lançar no Journify…" : "Lançar de novo…") { confirmar = true }
-                .buttonStyle(.souvPrimario).disabled(vivos.isEmpty)
+            Button { confirmar = true } label: {
+                if lancando {
+                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Lançando…") }
+                } else {
+                    Text(h.lancado == nil ? "Lançar no Journify…" : "Lançar de novo…")
+                }
+            }
+            .buttonStyle(.souvPrimario).disabled(vivos.isEmpty || lancando)
         }
-        if let l = h.lancado { avisoLancado(l, vivos) }
+        if let l = h.lancado { avisoLancado(l) }
+        if let lancou {
+            Label(lancou.feito, systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+            if let s = lancou.sobrou {
+                Label(s, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange).textSelection(.enabled)
+            }
+        }
         let semProjeto = vivos.filter { $0.pid == nil }.count
         if semProjeto > 0 {
-            Label("\(semProjeto) linha(s) sem projeto: escolha na coluna Projeto, ou o Claude pergunta ao lançar.",
+            Label("\(semProjeto) linha(s) sem projeto: escolha na coluna Projeto antes de lançar.",
                   systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
         }
         if let aviso { Label(aviso, systemImage: "info.circle").foregroundStyle(.secondary).textSelection(.enabled) }
@@ -139,7 +164,9 @@ struct HorasTela: View {
         }
         if h.itens.isEmpty {
             Text("Nada medido nesse dia: nenhuma task ou terminal livre pelo jfy e nenhuma reunião na agenda.")
-                .foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                .foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.vertical, 24)
+            linhaNova(h)
+            Spacer(minLength: 0)
         } else {
             // linhas próprias, não Table: dentro da Table do macOS (uma NSTableView) o Enter dos campos não chega a eles
             ScrollView {
@@ -201,6 +228,67 @@ struct HorasTela: View {
                     }
                 }
             }
+            linhaNova(h)
+        }
+    }
+
+    // ---------- registrar à mão ----------
+    /// O botão embaixo da tabela e, aberto, a linha nova com as mesmas colunas. Ela vai para o mesmo registro do dia
+    /// que o jfy usa para as tasks: depois dá para editar, levar para outro dia, remover e lançar, como qualquer linha.
+    @ViewBuilder private func linhaNova(_ h: Horas) -> some View {
+        if let n = nova {
+            HStack(spacing: 12) {
+                SouvSelect(opcoes: h.projetos.map { .init(valor: $0.id, rotulo: $0.nome, cor: Color(hex: $0.cor)) },
+                           selecionado: n.p.isEmpty ? nil : n.p, vazio: "projeto",
+                           rotuloLivre: n.p.isEmpty || h.projetos.contains { $0.id == n.p } ? nil : n.p,
+                           extra: ("Outro nome no Journify…", { textoOutro = ""; outro = PedidoOutro(item: nil, campo: "p") })) { nova?.p = $0 }
+                    .frame(width: 190, alignment: .leading)
+                SouvSelect(opcoes: Array(Set(h.categorias + [n.cat])).filter { !$0.isEmpty }.sorted().map { .init(valor: $0, rotulo: $0) },
+                           selecionado: n.cat) { nova?.cat = $0 }
+                    .frame(width: 150, alignment: .leading)
+                TextField("1:20", text: Binding(get: { nova?.min ?? "" }, set: { nova?.min = $0 }))
+                    .onSubmit { registrar() }.onExitCommand { nova = nil }
+                    .campoSouv().frame(width: 92)
+                    .help("1:20, 1h20, 80 (minutos) ou 1,5 (horas). O fator vale em cima, como nas outras linhas.")
+                    .frame(width: 140, alignment: .leading)
+                Color.clear.frame(width: 84, height: 1)
+                TextField("o que você fez", text: Binding(get: { nova?.desc ?? "" }, set: { nova?.desc = $0 }))
+                    .onSubmit { registrar() }.onExitCommand { nova = nil }
+                    .campoSouv().frame(maxWidth: .infinity)
+                if gravandoNova {
+                    ProgressView().controlSize(.small).frame(width: 22)
+                } else {
+                    Button { registrar() } label: { Image(systemName: "checkmark.circle.fill").foregroundStyle(n.valida ? .green : .secondary) }
+                        .buttonStyle(.souvIcone).disabled(!n.valida).help("Registrar (Enter)").frame(width: 22)
+                }
+                Button { nova = nil } label: { Image(systemName: "xmark") }
+                    .buttonStyle(.souvIcone).help("Cancelar (Esc)").frame(width: 22)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 7)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Souv.superficie))
+            .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Souv.destaque.opacity(0.45)))
+        } else {
+            Button { nova = Nova(cat: h.categorias.contains("Funcionalidade") ? "Funcionalidade" : h.categorias.first ?? "") } label: {
+                Label("Registrar horas à mão", systemImage: "plus.circle")
+            }
+            .buttonStyle(.souvLink)
+            .help("Um trabalho que o jfy não mediu (uma ligação, um trabalho fora do Claude): entra na tabela como as outras linhas")
+        }
+    }
+
+    private func registrar() {
+        guard let n = nova, n.valida, !gravandoNova else { return }
+        gravandoNova = true
+        Task {
+            let r = await JFY.rodar(["--horas-nova", iso, n.p, n.cat, n.min, n.desc])
+            gravandoNova = false
+            if r.status == 0 {
+                nova = nil
+                aviso = nil
+                await carregar()
+            } else {
+                aviso = r.erro.trimmingCharacters(in: .whitespacesAndNewlines)  // o que foi digitado fica para corrigir
+            }
         }
     }
 
@@ -214,8 +302,7 @@ struct HorasTela: View {
     }
 
     private func categoria(_ h: Horas, _ it: Horas.Item) -> some View {
-        SouvSelect(opcoes: Array(Set(h.categorias + [it.cat])).sorted().map { .init(valor: $0, rotulo: $0) }, selecionado: it.cat,
-                   extra: ("Outra…", { textoOutro = ""; outro = PedidoOutro(item: it, campo: "cat") })) { ajustar(it, "cat", $0) }
+        SouvSelect(opcoes: Array(Set(h.categorias + [it.cat])).sorted().map { .init(valor: $0, rotulo: $0) }, selecionado: it.cat) { ajustar(it, "cat", $0) }
     }
 
     /// O seletor de dia de uma linha: o trabalhado vai junto e, se o outro dia já tem a mesma linha, soma. O jfy
@@ -329,26 +416,42 @@ struct HorasTela: View {
         }
     }
 
+    /// Lança o dia pelo MCP (o jfy edita o que já está lá e mudou e cria o resto) e diz o que fez. O que está no
+    /// Journify sem ser linha da tabela o jfy não apaga: vira o aviso laranja.
     private func lancar() {
+        struct Feito: Decodable {
+            struct Sobra: Decodable { let atividade: String?; let horas: Double }
+            let novas, editadas, iguais: Int
+            let sobrando: [Sobra]
+        }
+        lancando = true
+        lancou = nil
         Task {
-            let r = await JFY.rodar(["--horas-lancar", iso])
-            if r.status == 0 { irParaJFY() } else { aviso = r.erro.trimmingCharacters(in: .whitespacesAndNewlines) }
+            let (r, msg): (Feito?, String?) = await JFY.ler(["--horas-lancar", iso])
+            await carregar()  // antes do aviso: o carregar limpa o aviso
+            lancando = false
+            if let r {
+                let feito = "Lançado no Journify: " + qtd(r.novas, "nova", "novas") + ", " + qtd(r.editadas, "editada", "editadas")
+                    + (r.iguais > 0 ? ", " + qtd(r.iguais, "já estava igual", "já estavam iguais") : "") + "."
+                let sobrou = r.sobrando.isEmpty ? nil
+                    : "No Journify há " + qtd(r.sobrando.count, "lançamento", "lançamentos") + " desse dia que não "
+                    + (r.sobrando.count == 1 ? "está" : "estão") + " na tabela: "
+                    + r.sobrando.map { "\($0.atividade ?? "sem descrição") (\(num($0.horas)) h)" }.joined(separator: "; ")
+                    + ". O jfy não apaga: tire pelo Minhas Horas se não deviam estar lá."
+                lancou = (feito, sobrou)
+            } else {
+                aviso = msg
+            }
         }
     }
 
     // ---------- já lançado ----------
-    /// O dia já foi para o Journify: avisa antes de alguém lançar de novo e diz o que mudou desde então.
-    private func avisoLancado(_ l: Horas.Lancado, _ vivos: [Horas.Item]) -> some View {
-        let mudou = vivos.filter { $0.estado == "mudou" }.count, novas = vivos.filter { $0.estado == "nova" }.count
-        let mudancas = [mudou > 0 ? "\(mudou) alterada\(mudou == 1 ? "" : "s")" : nil,
-                        novas > 0 ? "\(novas) nova\(novas == 1 ? "" : "s")" : nil,
-                        l.removidas > 0 ? (l.removidas == 1 ? "1 saiu da tabela" : "\(l.removidas) saíram da tabela") : nil].compactMap { $0 }
-        return Label {
-            Text(l.em == nil
-                 ? "Este dia já tem horas no Journify (lançadas antes de o jfy guardar o que foi lançado). Lançar de novo edita as horas já registradas, sem duplicar."
-                 : "Já lançado no Journify\(quando(l.em)). " + (mudancas.isEmpty
-                ? "A tabela está igual ao que foi lançado; lançar de novo vai editar as horas já registradas."
-                : "Desde então: " + mudancas.joined(separator: ", ") + ". Lançar de novo edita as horas já registradas, sem duplicar."))
+    /// O dia já tem lançamentos no Journify: avisa antes de alguém lançar de novo (as marcas da coluna Lança dizem o quê).
+    private func avisoLancado(_ l: Horas.Lancado) -> some View {
+        Label {
+            Text("Este dia já tem " + qtd(l.lancamentos, "lançamento", "lançamentos") + " no Journify (\(num(l.horas)) h). "
+                 + "✓ igual, ✎ mudou, + nova: lançar de novo edita o que mudou, sem duplicar."
+                 + (l.removidas > 0 ? " " + qtd(l.removidas, "lançamento de lá não está", "lançamentos de lá não estão") + " na tabela." : ""))
         } icon: { Image(systemName: "checkmark.seal.fill").foregroundStyle(Souv.destaque) }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -359,18 +462,18 @@ struct HorasTela: View {
         switch estado {
         case "lancada": Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).help("Já está no Journify assim")
         case "mudou": Image(systemName: "pencil.circle.fill").foregroundStyle(.orange)
-            .help("Mudou desde o lançamento: lançar de novo edita o que está no Journify")
+            .help("No Journify com outras horas ou outra categoria: lançar de novo edita o que está lá")
         case "nova": Image(systemName: "plus.circle.fill").foregroundStyle(Souv.primaria).help("Nova: ainda não está no Journify")
         default: EmptyView()
         }
     }
 
-    private func quando(_ ts: Double?) -> String {
-        guard let ts else { return "" }
-        return " em " + Date(timeIntervalSince1970: ts).formatted(.dateTime.day().month(.twoDigits).hour().minute().locale(Locale(identifier: "pt_BR")))
-    }
-
     // ---------- formatos ----------
+    /// Horas do Journify (decimais) com vírgula: 6,5.
+    private func num(_ h: Double) -> String { h.formatted(.number.precision(.fractionLength(0...2)).locale(Locale(identifier: "pt_BR"))) }
     private func hm(_ m: Int) -> String { "\(m / 60):" + String(format: "%02d", m % 60) }
     private func fmt(_ m: Int) -> String { m >= 60 ? "\(m / 60)h " + String(format: "%02d", m % 60) + "min" : "\(m)min" }
 }
+
+/// "1 nova", "2 novas".
+func qtd(_ n: Int, _ um: String, _ varios: String) -> String { "\(n) " + (n == 1 ? um : varios) }

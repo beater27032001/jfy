@@ -1,0 +1,20 @@
+/* Meu dia: os cartões numa grade que se ajusta à largura (como o LazyVGrid adaptativo do Mac, mínimo 380). */
+:root { --md-vermelho: #e5484d; --md-verde: #2fbf71; --md-laranja: #f5a524; --md-fechado: #3a3a3c; }
+@media (prefers-color-scheme: dark) { :root { --md-fechado: #c7c7cc; } }
+
+.md { padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+.md-cabeca { align-items: flex-start; }
+.md-titulo { font-size: 30px; }
+.md-grade { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px; align-items: start; }
+.md-cartao { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.md-cartao-titulo { font-size: 17px; }
+.md-linha { flex: 1; min-width: 0; padding: 5px 8px; border-radius: 8px; cursor: pointer; }
+.md-linha:hover { background: color-mix(in srgb, var(--texto) 6%, transparent); }
+.md-legenda { font-size: 11.5px; }
+.md-uma { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.md-duas { overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; min-width: 0; }
+.md-rascunho { font-size: 10.5px; padding: 0 5px; border-radius: 99px; background: color-mix(in srgb, var(--texto2) 20%, transparent); flex: none; }
+.md-erro { display: flex; gap: 6px; align-items: flex-start; color: var(--md-laranja); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; }
+.md-jornada { font: 300 28px 'Lexend'; font-variant-numeric: tabular-nums; }
+.md-barra { height: 6px; border-radius: 3px; background: color-mix(in srgb, var(--texto2) 22%, transparent); overflow: hidden; }
+.md-barra span { display: block; height: 100%; border-radius: 3px; }

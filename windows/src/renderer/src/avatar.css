@@ -1,0 +1,6 @@
+/* a pessoa num círculo: a foto do diretório do Google ou as iniciais (avatar.tsx) */
+.avatar {
+  display: inline-grid; place-items: center; flex: none; border-radius: 50%; overflow: hidden;
+  color: #fff; font-weight: 600; line-height: 1; user-select: none;
+}
+.avatar img { width: 100%; height: 100%; object-fit: cover; }

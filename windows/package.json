@@ -1,0 +1,95 @@
+{
+  "name": "jfy-windows",
+  "version": "0.1.0",
+  "description": "App do jfy para o Windows: o mesmo jfy do app do Mac, com as abas no lugar do tmux.",
+  "private": true,
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "postinstall": "node scripts/postinstall.mjs",
+    "dist": "node scripts/python.mjs && electron-vite build && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "node-pty": "^1.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.11",
+    "@types/react": "^19.3.3",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.3.0",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "dompurify": "^3.5.0",
+    "electron": "^45.5.0",
+    "electron-builder": "^26.18.0",
+    "electron-vite": "^6.0.0",
+    "lucide-react": "^1.81.0",
+    "marked": "^18.3.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.4.0"
+  },
+  "build": {
+    "appId": "dev.jfy.windows",
+    "productName": "jfy",
+    "directories": {
+      "output": "dist",
+      "buildResources": "recursos"
+    },
+    "files": [
+      "out/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../jfy",
+        "to": "motor/jfy"
+      },
+      {
+        "from": "../tmux.conf",
+        "to": "motor/tmux.conf"
+      },
+      {
+        "from": "../fonte/icones.txt",
+        "to": "motor/fonte/icones.txt"
+      },
+      {
+        "from": "../app/Marca",
+        "to": "marca"
+      },
+      {
+        "from": "recursos/icone.png",
+        "to": "icone.png"
+      },
+      {
+        "from": "python",
+        "to": "python"
+      }
+    ],
+    "protocols": [
+      {
+        "name": "jfy",
+        "schemes": [
+          "jfy"
+        ]
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "recursos/icone.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "shortcutName": "jfy",
+      "createDesktopShortcut": true
+    },
+    "asarUnpack": [
+      "node_modules/node-pty/**"
+    ],
+    "npmRebuild": false
+  },
+  "author": "Souv"
+}

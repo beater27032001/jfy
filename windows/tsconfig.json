@@ -1,0 +1,31 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": [
+      "node",
+      "vite/client"
+    ],
+    "paths": {
+      "@marca/*": [
+        "../app/Marca/*"
+      ],
+      "@fonte/*": [
+        "../fonte/*"
+      ],
+      "@mural/*": [
+        "../mural/*"
+      ]
+    },
+    "resolveJsonModule": true
+  },
+  "include": [
+    "src",
+    "electron.vite.config.ts"
+  ]
+}

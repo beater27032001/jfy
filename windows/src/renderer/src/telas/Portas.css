@@ -1,0 +1,13 @@
+.po-tela { display: flex; flex-direction: column; gap: 16px; padding: 24px; min-height: 100%; }
+.po-topo { align-items: flex-start; flex-wrap: wrap; }
+.po-vazio { flex: 1; display: grid; place-items: center; }
+.po-linha {
+  display: flex; align-items: center; gap: 14px; padding: 12px;
+  background: var(--superficie); border: 1px solid var(--borda); border-radius: 10px;
+}
+.po-numero { width: 130px; flex: none; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.po-tipo { width: 110px; flex: none; display: flex; align-items: center; gap: 6px; }
+.po-tipo img { image-rendering: pixelated; } /* pixel art: sem suavizar */
+.po-nome { flex: 1; gap: 2px; }
+.po-nome strong { font-weight: 500; }
+.po-nome span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

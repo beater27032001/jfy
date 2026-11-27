@@ -12,7 +12,7 @@ struct ReunioesTela: View {
     struct Evento: Decodable, Identifiable, Equatable {
         struct Convidado: Decodable, Equatable {
             let email: String
-            let nome, resposta: String?
+            let nome, resposta, foto: String?
             let eu: Bool
         }
         let id, titulo, descricao: String
@@ -21,6 +21,9 @@ struct ReunioesTela: View {
         let local, link, url, organizador, minhaResposta, p, projeto, cor, contexto: String?
         let convidados: [Convidado]
         let pessoa: String?  // evento da agenda de outra pessoa (o "Reunião com…")
+        let pessoaFoto: String?  // a foto dela, no bloco
+        /// Os outros convidados (sem você), para as fotos no bloco.
+        var outros: [Convidado] { convidados.filter { !$0.eu } }
         var inicio: Date { Date(timeIntervalSince1970: ini) }
         var termino: Date { Date(timeIntervalSince1970: fim) }
         var recusado: Bool { minhaResposta == "declined" }
@@ -39,7 +42,7 @@ struct ReunioesTela: View {
 
     struct Pessoa: Decodable {
         let email: String
-        let nome, erro: String?
+        let nome, erro, foto: String?
         let eventos: [Evento]
     }
 
@@ -192,7 +195,9 @@ struct ReunioesTela: View {
                     ForEach(Array(pessoas.enumerated()), id: \.element) { i, email in
                         let info = agenda?.pessoas?.first { $0.email == email }
                         HStack(spacing: 5) {
-                            Circle().fill(Color(hex: Self.coresPessoas[i % Self.coresPessoas.count])).frame(width: 8, height: 8)
+                            // a foto com o anel na cor da pessoa: a cor é a dos eventos dela na agenda
+                            AvatarPessoa(nome: info?.nome, email: email, foto: info?.foto,
+                                         cor: Color(hex: Self.coresPessoas[i % Self.coresPessoas.count]), tamanho: 18)
                             Text(info?.nome ?? email.components(separatedBy: "@")[0]).lineLimit(1)
                             if let erro = info?.erro {
                                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange).help(erro)
@@ -336,9 +341,26 @@ private struct Bloco: View {
             HStack(spacing: 0) {
                 Rectangle().fill(cor).frame(width: 3)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(evento.titulo).font(.caption.weight(.semibold)).lineLimit(2).strikethrough(evento.recusado)
+                    HStack(alignment: .top, spacing: 4) {
+                        // evento da agenda de outra pessoa ("Reunião com…"): a foto dela na frente, como no Google
+                        if let p = evento.pessoa { AvatarPessoa(nome: nil, email: p, foto: evento.pessoaFoto, tamanho: 14) }
+                        Text(evento.titulo).font(.caption.weight(.semibold)).lineLimit(2).strikethrough(evento.recusado)
+                    }
                     Text("\(evento.inicio.formatted(.dateTime.hour().minute())) – \(evento.termino.formatted(.dateTime.hour().minute()))")
                         .font(.caption2).foregroundStyle(.secondary)
+                    // quem vai junto, nas reuniões de 1 h ou mais (nas curtas não cabe): até 4 fotos e o resto em número
+                    if evento.pessoa == nil, evento.fim - evento.ini >= 3600, !evento.outros.isEmpty {
+                        HStack(spacing: -4) {
+                            ForEach(evento.outros.prefix(4), id: \.email) { c in
+                                AvatarPessoa(nome: c.nome, email: c.email, foto: c.foto, tamanho: 16)
+                                    .overlay(Circle().strokeBorder(Souv.fundo, lineWidth: 1))
+                            }
+                            if evento.outros.count > 4 {
+                                Text("+\(evento.outros.count - 4)").font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary).padding(.leading, 6)
+                            }
+                        }
+                        .padding(.top, 2)
+                    }
                 }
                 .padding(.horizontal, 4).padding(.vertical, 2)
                 Spacer(minLength: 0)
@@ -485,8 +507,15 @@ private struct EventoDetalhe: View {
                             Text("CONVIDADOS (\(evento.convidados.count))").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                             ForEach(evento.convidados, id: \.email) { c in
                                 let r = resposta(c.resposta)
-                                Label { Text((c.nome ?? c.email) + (c.eu ? " (você)" : "")) } icon: { Image(systemName: r.0).foregroundStyle(r.1) }
-                                    .help(c.email)
+                                HStack(spacing: 8) {
+                                    AvatarPessoa(nome: c.nome, email: c.email, foto: c.foto, tamanho: 22)
+                                        .overlay(alignment: .bottomTrailing) {  // a resposta no cantinho da foto, como no Google
+                                            Image(systemName: r.0).font(.system(size: 9, weight: .bold)).foregroundStyle(r.1)
+                                                .background(Circle().fill(Souv.fundo).padding(-1)).offset(x: 3, y: 3)
+                                        }
+                                    Text((c.nome ?? c.email) + (c.eu ? " (você)" : ""))
+                                }
+                                .help(c.email)
                             }
                         }
                     }
